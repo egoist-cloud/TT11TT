@@ -1,7 +1,6 @@
 import os
 import asyncio
 import discord
-from discord.ext.native_voice import VoiceClient, FFmpegMediaSource
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
 
@@ -50,23 +49,8 @@ async def on_ready():
         if not client.voice_clients:
             # self_mute=True — выключен микрофон
             # self_deaf=True — выключены наушники
-            # self_video=True — включаем «камеру»
-            voice = await channel.connect(cls=VoiceClient, self_mute=True, self_deaf=True, self_video=True)
-            print(f"Успешно подключен к {channel.name} (в муте, с видео)")
-
-            # Запускаем видео-фон
-            # Замените 'background.mp4' на имя вашего видео-файла в репозитории
-            source = FFmpegMediaSource.from_file(
-                'background.mp4', 
-                'H264',
-                width=1280,
-                height=720,
-                fps=30,
-                bitrate=4_000_000,
-            )
-            voice.play(source)
-            print("Воспроизведение видео запущено.")
-
+            voice = await channel.connect(self_mute=True, self_deaf=True)
+            print(f"Успешно подключен к {channel.name} (в полном муте)")
         else:
             print("Уже подключен к голосовому каналу.")
     except Exception as e:
@@ -82,18 +66,10 @@ async def on_voice_state_update(member, before, after):
             try:
                 channel = client.get_channel(VOICE_CHANNEL_ID)
                 if channel:
-                    voice = await channel.connect(cls=VoiceClient, self_mute=True, self_deaf=True, self_video=True)
-                    source = FFmpegMediaSource.from_file(
-                        'background.mp4',
-                        'H264',
-                        width=1280,
-                        height=720,
-                        fps=30,
-                        bitrate=4_000_000,
-                    )
-                    voice.play(source)
-                    print("Переподключение успешно (в муте, с видео).")
+                    voice = await channel.connect(self_mute=True, self_deaf=True)
+                    print("Переподключение успешно (в полном муте).")
             except Exception as e:
                 print(f"Не удалось переподключиться: {e}")
 
+# Запускаем Discord-клиента
 client.run(TOKEN)
