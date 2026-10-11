@@ -1,9 +1,12 @@
 import os
 import asyncio
 import discord
+import yt_dlp
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
-import yt_dlp  # <-- Новая библиотека
+
+# Импортируем список треков из отдельного файла
+from tracks import TRACKS
 
 # --- Чтение переменных окружения ---
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -14,15 +17,10 @@ if not TOKEN or not VOICE_CHANNEL_ID:
 
 VOICE_CHANNEL_ID = int(VOICE_CHANNEL_ID)
 
-# --- Список доступных треков (ссылки на YouTube) ---
-TRACKS = {
-    "1": "https://www.youtube.com/watch?v=rB11e52E9LM",  # Ваша музыка
-    # "2": "https://www.youtube.com/watch?v=другая_ссылка",
-}
-
+# Текущий трек (по умолчанию первый)
 current_track = "1"
 
-# --- Веб-сервер для Render ---
+# --- Веб-сервер для Render (Health Check) ---
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -68,10 +66,8 @@ def play_music(voice_client, track_key):
             print(f"Трек {track_key} не найден.")
             return
 
-        # Получаем прямой URL аудиопотока
         audio_url = get_audio_source(url)
 
-        # Опции FFmpeg для стабильного стриминга
         ffmpeg_options = {
             'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
             'options': '-vn'
