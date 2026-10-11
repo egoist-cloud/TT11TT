@@ -35,6 +35,18 @@ threading.Thread(target=run_web_server, daemon=True).start()
 
 client = discord.Client()
 
+def play_music(voice_client):
+    """Запускает музыку и ставит её на повтор."""
+    if not voice_client or not voice_client.is_connected():
+        return
+    try:
+        source = discord.FFmpegPCMAudio('music.mp3')
+        # after=lambda e: ... — функция, которая вызывается после окончания трека
+        voice_client.play(source, after=lambda e: play_music(voice_client))
+        print("Музыка играет (повтор включён).")
+    except Exception as e:
+        print(f"Ошибка при воспроизведении: {e}")
+
 @client.event
 async def on_ready():
     print(f"Авторизован как {client.user}")
@@ -50,11 +62,7 @@ async def on_ready():
         if not client.voice_clients:
             voice = await channel.connect(self_mute=True)
             print(f"Успешно подключен к {channel.name} (в муте)")
-
-            # Запускаем музыку
-            source = discord.FFmpegPCMAudio('music.mp3')
-            voice.play(source)
-            print("Воспроизведение музыки запущено.")
+            play_music(voice)
         else:
             print("Уже подключен к голосовому каналу.")
     except Exception as e:
@@ -71,9 +79,8 @@ async def on_voice_state_update(member, before, after):
                 channel = client.get_channel(VOICE_CHANNEL_ID)
                 if channel:
                     voice = await channel.connect(self_mute=True)
-                    source = discord.FFmpegPCMAudio('music.mp3')
-                    voice.play(source)
                     print("Переподключение успешно (в муте).")
+                    play_music(voice)
             except Exception as e:
                 print(f"Не удалось переподключиться: {e}")
 
