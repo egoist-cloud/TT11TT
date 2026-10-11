@@ -4,21 +4,19 @@ import discord
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
 
-# --- Токены ---
-# Аккаунт №1 (сидит 24/7)
-TOKEN_MAIN = os.getenv("DISCORD_TOKEN_1")
-MAIN_CHANNEL_ID = int(os.getenv("VOICE_CHANNEL_ID", "1558455255791050803"))
+# --- Токены трёх аккаунтов ---
+TOKENS = [
+    os.getenv("DISCORD_TOKEN_1"),
+    os.getenv("DISCORD_TOKEN_2"),
+    os.getenv("DISCORD_TOKEN_3"),
+]
+TOKENS = [t for t in TOKENS if t]
 
-# Аккаунт №2 (дежурит за человеком 1)
-TOKEN_WATCH_1 = os.getenv("DISCORD_TOKEN_2")
-USER_ID_1 = int(os.getenv("USER_ID_1"))
+if not TOKENS:
+    raise ValueError("Не задан ни один токен (DISCORD_TOKEN_1/2/3)")
 
-# Аккаунт №3 (дежурит за человеком 2)
-TOKEN_WATCH_2 = os.getenv("DISCORD_TOKEN_3")
-USER_ID_2 = int(os.getenv("USER_ID_2"))
-
-if not TOKEN_MAIN or not TOKEN_WATCH_1 or not TOKEN_WATCH_2:
-    raise ValueError("Не заданы DISCORD_TOKEN_1, DISCORD_TOKEN_2 или DISCORD_TOKEN_3")
+# --- Канал, в котором сидят все ---
+VOICE_CHANNEL_ID = int(os.getenv("VOICE_CHANNEL_ID", "1558455255791050803"))
 
 # --- Веб-сервер для Render (Health Check) ---
 class HealthHandler(BaseHTTPRequestHandler):
@@ -40,118 +38,58 @@ def run_web_server():
 threading.Thread(target=run_web_server, daemon=True).start()
 # ----------------------------------------------------
 
-# --- Аккаунт №1: сидит 24/7 в муте ---
-main_client = discord.Client()
+async def run_account(token, name):
+    client = discord.Client()
+    is_reconnecting = False
 
-@main_client.event
-async def on_ready():
-    print(f"[MAIN] Авторизован как {main_client.user}")
-    try:
-        channel = main_client.get_channel(MAIN_CHANNEL_ID)
-        if not channel:
-            print(f"[MAIN] Канал {MAIN_CHANNEL_ID} не найден.")
+    async def connect():
+        nonlocal is_reconnecting
+        if is_reconnecting:
             return
-        if not main_client.voice_clients:
-            await channel.connect(self_mute=True, self_deaf=True)
-            print(f"[MAIN] Подключен к {channel.name} (в полном муте)")
-    except Exception as e:
-        print(f"[MAIN] Ошибка подключения: {e}")
-
-@main_client.event
-async def on_voice_state_update(member, before, after):
-    if member.id != main_client.user.id:
-        return
-    if before.channel and not after.channel:
-        print("[MAIN] Кикнули. Переподключаюсь через 5 секунд...")
-        await asyncio.sleep(5)
+        is_reconnecting = True
         try:
-            channel = main_client.get_channel(MAIN_CHANNEL_ID)
-            if channel:
-                await channel.connect(self_mute=True, self_deaf=True)
-                print("[MAIN] Переподключение успешно.")
-        except Exception as e:
-            print(f"[MAIN] Ошибка переподключения: {e}")
-
-# --- Дежурный аккаунт (следит за человеком) ---
-class Watcher:
-    def __init__(self, token, user_id, name):
-        self.token = token
-        self.user_id = user_id
-        self.name = name
-        self.client = discord.Client()
-        self.is_reconnecting = False
-        self._register_events()
-
-    def _register_events(self):
-        @self.client.event
-        async def on_ready():
-            print(f"[{self.name}] Авторизован как {self.client.user}")
-
-        @self.client.event
-        async def on_voice_state_update(member, before, after):
-            if member.id != self.user_id:
-                return
-
-            # Человек вышел из канала — заходим
-            if before.channel and not after.channel:
-                print(f"[{self.name}] {member} вышел. Захожу в {before.channel.name}")
-                await asyncio.sleep(5)
-                await self.connect(before.channel.id)
-
-            # Человек перешёл в другой канал — следуем
-            elif before.channel and after.channel and before.channel != after.channel:
-                print(f"[{self.name}] {member} перешёл в {after.channel.name}. Следую.")
-                await asyncio.sleep(5)
-                await self.connect(after.channel.id)
-
-            # Человек вернулся — выходим
-            elif not before.channel and after.channel:
-                print(f"[{self.name}] {member} вернулся. Выхожу.")
-                await self.disconnect()
-
-    async def connect(self, channel_id):
-        if self.is_reconnecting:
-            return
-        self.is_reconnecting = True
-        try:
-            channel = self.client.get_channel(channel_id)
+            channel = client.get_channel(VOICE_CHANNEL_ID)
             if not channel:
-                print(f"[{self.name}] Канал {channel_id} не найден.")
+                print(f"[{name}] Канал {VOICE_CHANNEL_ID} не найден.")
                 return
-            if self.client.voice_clients:
+            if client.voice_clients:
                 try:
-                    await self.client.voice_clients[0].disconnect(force=True)
+                    await client.voice_clients[0].disconnect(force=True)
                 except Exception:
                     pass
                 await asyncio.sleep(2)
             await channel.connect(self_mute=True, self_deaf=True)
-            print(f"[{self.name}] Подключен к {channel.name} (в полном муте)")
+            print(f"[{name}] Подключен к {channel.name} (в полном муте)")
         except Exception as e:
-            print(f"[{self.name}] Ошибка: {e}")
+            print(f"[{name}] Ошибка подключения: {e}")
         finally:
-            self.is_reconnecting = False
+            is_reconnecting = False
 
-    async def disconnect(self):
-        if self.client.voice_clients:
-            try:
-                await self.client.voice_clients[0].disconnect(force=True)
-                print(f"[{self.name}] Отключен.")
-            except Exception as e:
-                print(f"[{self.name}] Ошибка отключения: {e}")
+    @client.event
+    async def on_ready():
+        print(f"[{name}] Авторизован как {client.user}")
+        await connect()
 
-    async def start(self):
-        await self.client.start(self.token)
+    @client.event
+    async def on_voice_state_update(member, before, after):
+        if member.id != client.user.id:
+            return
+        # Если бота кикнули — переподключаемся
+        if before.channel and not after.channel:
+            print(f"[{name}] Кикнули. Переподключаюсь через 5 секунд...")
+            await asyncio.sleep(5)
+            await connect()
+        # Если бота перекинули — остаёмся в новом канале
+        elif before.channel and after.channel and before.channel != after.channel:
+            print(f"[{name}] Перекинули в {after.channel.name}. Остаюсь здесь.")
 
-# --- Запуск ---
+    await client.start(token)
+
 async def main():
-    watcher1 = Watcher(TOKEN_WATCH_1, USER_ID_1, "Watch-1")
-    watcher2 = Watcher(TOKEN_WATCH_2, USER_ID_2, "Watch-2")
-
-    await asyncio.gather(
-        main_client.start(TOKEN_MAIN),
-        watcher1.start(),
-        watcher2.start(),
-    )
+    tasks = []
+    for i, token in enumerate(TOKENS, start=1):
+        tasks.append(run_account(token, f"Account-{i}"))
+    await asyncio.gather(*tasks)
 
 if __name__ == "__main__":
     asyncio.run(main())
