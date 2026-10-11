@@ -43,7 +43,7 @@ if not GUILD_ID:
     raise ValueError("Не задан GUILD_ID")
 
 # ====================================================
-# ВЕБ-СЕРВЕР
+# ВЕБ-СЕРВЕР ДЛЯ RENDER
 # ====================================================
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -79,29 +79,23 @@ async def ensure_main_connected():
         if not channel:
             print(f"[MAIN] Канал {MAIN_CHANNEL_ID} не найден.", flush=True)
             return
-
-        # Уже сидим в нужном канале — ничего не делаем
         if (main_client.voice_clients
                 and main_client.voice_clients[0].is_connected()
                 and main_client.voice_clients[0].channel.id == MAIN_CHANNEL_ID):
             return
-
-        # Сидим в другом канале — отключаемся
         if main_client.voice_clients:
             try:
                 await main_client.voice_clients[0].disconnect(force=True)
             except Exception:
                 pass
             await asyncio.sleep(2)
-
-        # Пробуем подключиться 3 раза
         for attempt in range(3):
             try:
                 await channel.connect(self_mute=True, self_deaf=True, timeout=30.0)
                 print(f"[MAIN] Подключен к {channel.name} (в полном муте)", flush=True)
                 return
             except Exception as e:
-                print(f"[MAIN] Попытка {attempt + 1} не удалась: {e}", flush=True)
+                print(f"[MAIN] Попытка {attempt + 1} не удалась: {type(e).__name__}: {e}", flush=True)
                 await asyncio.sleep(10)
         print("[MAIN] Не удалось подключиться после 3 попыток.", flush=True)
     except Exception as e:
@@ -135,7 +129,7 @@ async def on_voice_state_update(member, before, after):
         await ensure_main_connected()
 
 # ====================================================
-# ДЕЖУРНЫЙ АККАУНТ
+# ДЕЖУРНЫЙ АККАУНТ (только когда человек ОФЛАЙН)
 # ====================================================
 class Watcher:
     def __init__(self, token, user_id, name):
@@ -153,14 +147,31 @@ class Watcher:
             print(f"[{self.name}] Авторизован как {self.client.user}", flush=True)
 
         @self.client.event
+        async def on_presence_update(before, after):
+            if after.id != self.user_id:
+                return
+            # Человек ушёл в офлайн — заходим
+            if after.status == discord.Status.offline:
+                print(f"[{self.name}] {after} ушёл в офлайн. Захожу через 30 секунд...", flush=True)
+                if self.pending_join and not self.pending_join.done():
+                    self.pending_join.cancel()
+                self.pending_join = asyncio.create_task(
+                    self.delayed_join(MAIN_CHANNEL_ID)
+                )
+            # Человек вернулся в онлайн — выходим
+            elif after.status != discord.Status.offline:
+                print(f"[{self.name}] {after} вернулся в онлайн. Выхожу.", flush=True)
+                if self.pending_join and not self.pending_join.done():
+                    self.pending_join.cancel()
+                    self.pending_join = None
+                await self.disconnect()
+
+        @self.client.event
         async def on_voice_state_update(member, before, after):
-            # Игнорируем свои события
             if member.id == self.client.user.id:
                 return
-            # Следим только за нужным человеком
             if member.id != self.user_id:
                 return
-            # Событие на нашем сервере
             if before.channel and before.channel.guild.id != GUILD_ID:
                 return
             if after.channel and after.channel.guild.id != GUILD_ID:
@@ -168,16 +179,16 @@ class Watcher:
 
             # Человек ВЫШЕЛ
             if before.channel and not after.channel:
-                print(f"[{self.name}] {member} вышел. Жду 30 секунд...", flush=True)
-                if self.pending_join and not self.pending_join.done():
-                    self.pending_join.cancel()
-                self.pending_join = asyncio.create_task(
-                    self.delayed_join(before.channel.id)
-                )
+                if member.status == discord.Status.offline:
+                    print(f"[{self.name}] {member} вышел и офлайн. Захожу.", flush=True)
+                    await asyncio.sleep(5)
+                    await self.connect(before.channel.id)
+                else:
+                    print(f"[{self.name}] {member} вышел, но онлайн. Не захожу.", flush=True)
 
             # Человек ЗАШЁЛ
             elif not before.channel and after.channel:
-                print(f"[{self.name}] {member} зашёл. Отменяю таймер и выхожу.", flush=True)
+                print(f"[{self.name}] {member} зашёл. Выхожу.", flush=True)
                 if self.pending_join and not self.pending_join.done():
                     self.pending_join.cancel()
                     self.pending_join = None
@@ -194,14 +205,14 @@ class Watcher:
     async def delayed_join(self, channel_id):
         try:
             await asyncio.sleep(30)
-            print(f"[{self.name}] 30 секунд прошло. Проверяю...", flush=True)
+            print(f"[{self.name}] 30 секунд прошло. Проверяю статус...", flush=True)
             guild = self.client.get_guild(GUILD_ID)
             if guild:
-                for vc in guild.voice_channels:
-                    if any(m.id == self.user_id for m in vc.members):
-                        print(f"[{self.name}] Человек вернулся. Не захожу.", flush=True)
-                        return
-            print(f"[{self.name}] Человек не вернулся. Захожу.", flush=True)
+                member = guild.get_member(self.user_id)
+                if member and member.status != discord.Status.offline:
+                    print(f"[{self.name}] Человек уже онлайн. Не захожу.", flush=True)
+                    return
+            print(f"[{self.name}] Человек офлайн. Захожу.", flush=True)
             await self.connect(channel_id)
         except asyncio.CancelledError:
             print(f"[{self.name}] Таймер отменён.", flush=True)
@@ -224,7 +235,7 @@ class Watcher:
             await channel.connect(self_mute=True, self_deaf=True, timeout=30.0)
             print(f"[{self.name}] Подключен к {channel.name} (в полном муте)", flush=True)
         except Exception as e:
-            print(f"[{self.name}] Ошибка: {e}", flush=True)
+            print(f"[{self.name}] Ошибка: {type(e).__name__}: {e}", flush=True)
             traceback.print_exc()
         finally:
             self.is_reconnecting = False
@@ -241,7 +252,7 @@ class Watcher:
         try:
             await self.client.start(self.token)
         except Exception as e:
-            print(f"[{self.name}] КРИТИЧЕСКАЯ ОШИБКА: {e}", flush=True)
+            print(f"[{self.name}] КРИТИЧЕСКАЯ ОШИБКА: {type(e).__name__}: {e}", flush=True)
             traceback.print_exc()
 
 # ====================================================
