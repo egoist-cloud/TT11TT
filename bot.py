@@ -5,19 +5,24 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
 
 # --- Токены ---
-# Аккаунт №1 (сидит 24/7)
+# Аккаунт №1 (бот, сидит 24/7)
 TOKEN_MAIN = os.getenv("DISCORD_TOKEN_1")
 MAIN_CHANNEL_ID = int(os.getenv("VOICE_CHANNEL_ID", "1558455255791050803"))
 
-# Аккаунты №2 и №3 (дежурят за людьми)
+# Аккаунты №2 и №3 (следят за людьми)
 TOKEN_WATCH_1 = os.getenv("DISCORD_TOKEN_2")
 USER_ID_1 = int(os.getenv("USER_ID_1"))
 
 TOKEN_WATCH_2 = os.getenv("DISCORD_TOKEN_3")
 USER_ID_2 = int(os.getenv("USER_ID_2"))
 
+# ID сервера, на котором сидят люди
+GUILD_ID = int(os.getenv("GUILD_ID"))
+
 if not TOKEN_MAIN or not TOKEN_WATCH_1 or not TOKEN_WATCH_2:
     raise ValueError("Не заданы DISCORD_TOKEN_1, DISCORD_TOKEN_2 или DISCORD_TOKEN_3")
+if not GUILD_ID:
+    raise ValueError("Не задан GUILD_ID")
 
 # --- Веб-сервер для Render (Health Check) ---
 class HealthHandler(BaseHTTPRequestHandler):
@@ -71,7 +76,7 @@ async def on_voice_state_update(member, before, after):
         except Exception as e:
             print(f"[MAIN] Ошибка переподключения: {e}")
 
-# --- Дежурный аккаунт: заходит, если человек отсутствует > 30 секунд ---
+# --- Дежурный аккаунт ---
 class Watcher:
     def __init__(self, token, user_id, name):
         self.token = token
@@ -79,7 +84,6 @@ class Watcher:
         self.name = name
         self.client = discord.Client()
         self.is_reconnecting = False
-        self.join_task = None  # задача ожидания 30 секунд
         self.current_channel_id = None
         self._register_events()
 
@@ -90,48 +94,32 @@ class Watcher:
 
         @self.client.event
         async def on_voice_state_update(member, before, after):
+            # Следим только за нужным человеком
             if member.id != self.user_id:
                 return
 
-            # Человек ЗАШЁЛ в канал — отменяем ожидание и выходим
-            if not before.channel and after.channel:
-                if self.join_task and not self.join_task.done():
-                    self.join_task.cancel()
-                    self.join_task = None
-                    print(f"[{self.name}] Человек вернулся, отменяю вход.")
-                await self.disconnect()
+            # Проверяем, что событие произошло на НУЖНОМ сервере
+            if before.channel and before.channel.guild.id != GUILD_ID:
+                return
+            if after.channel and after.channel.guild.id != GUILD_ID:
+                return
 
-            # Человек ВЫШЕЛ из канала — запускаем таймер на 30 секунд
-            elif before.channel and not after.channel:
-                print(f"[{self.name}] Человек вышел. Жду 30 секунд...")
-                self.current_channel_id = before.channel.id
-                self.join_task = asyncio.create_task(self.delayed_join(before.channel.id))
+            # Человек вышел из канала на нашем сервере
+            if before.channel and not after.channel:
+                print(f"[{self.name}] {member} вышел. Захожу в {before.channel.name}")
+                await asyncio.sleep(5)
+                await self.connect(before.channel.id)
 
-            # Человек ПЕРЕШЁЛ в другой канал — отменяем таймер и выходим
+            # Человек перешёл в другой канал на нашем сервере
             elif before.channel and after.channel and before.channel != after.channel:
-                if self.join_task and not self.join_task.done():
-                    self.join_task.cancel()
-                    self.join_task = None
-                print(f"[{self.name}] Человек перешёл в {after.channel.name}. Жду 30 секунд...")
-                self.current_channel_id = after.channel.id
-                self.join_task = asyncio.create_task(self.delayed_join(after.channel.id))
+                print(f"[{self.name}] {member} перешёл в {after.channel.name}. Следую.")
+                await asyncio.sleep(5)
+                await self.connect(after.channel.id)
 
-    async def delayed_join(self, channel_id):
-        """Ждёт 30 секунд и заходит в канал."""
-        try:
-            await asyncio.sleep(30)
-            # Проверяем, что человек всё ещё не в канале
-            channel = self.client.get_channel(channel_id)
-            if not channel:
-                return
-            # Проверяем, есть ли человек в канале
-            if any(m.id == self.user_id for m in channel.members):
-                print(f"[{self.name}] Человек вернулся до истечения таймера.")
-                return
-            print(f"[{self.name}] 30 секунд прошло. Захожу в {channel.name}")
-            await self.connect(channel_id)
-        except asyncio.CancelledError:
-            pass
+            # Человек вернулся в канал на нашем сервере
+            elif not before.channel and after.channel:
+                print(f"[{self.name}] {member} вернулся. Выхожу.")
+                await self.disconnect()
 
     async def connect(self, channel_id):
         if self.is_reconnecting:
