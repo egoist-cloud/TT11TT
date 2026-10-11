@@ -1,7 +1,6 @@
 services:
   - type: web
     name: TT11TT
-    runtime: docker
     plan: free
     envVars:
       - key: DISCORD_TOKEN
