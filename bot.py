@@ -4,16 +4,12 @@ import discord
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
 
-# --- Токены ---
-TOKEN_EGOIST = os.getenv("DISCORD_TOKEN_2")
-USER_ID_EGOIST = int(os.getenv("USER_ID_1"))
-GUILD_ID = int(os.getenv("GUILD_ID"))
-VOICE_CHANNEL_ID = int(os.getenv("VOICE_CHANNEL_ID", "1558455255791050803"))
+# --- Токен бота Старый спит ---
+TOKEN_MAIN = os.getenv("DISCORD_TOKEN_1")
+MAIN_CHANNEL_ID = int(os.getenv("VOICE_CHANNEL_ID", "1558455255791050803"))
 
-if not TOKEN_EGOIST:
-    raise ValueError("Не задан DISCORD_TOKEN_2")
-if not GUILD_ID:
-    raise ValueError("Не задан GUILD_ID")
+if not TOKEN_MAIN:
+    raise ValueError("Не задан DISCORD_TOKEN_1")
 
 # --- Веб-сервер ---
 class HealthHandler(BaseHTTPRequestHandler):
@@ -37,18 +33,22 @@ threading.Thread(target=run_web_server, daemon=True).start()
 
 client = discord.Client()
 is_reconnecting = False
-pending_join = None  # задача ожидания 30 секунд
 
-async def connect_to_channel(channel_id):
+async def ensure_connected():
+    """Гарантирует, что бот в канале. Если нет — подключает."""
     global is_reconnecting
     if is_reconnecting:
         return
     is_reconnecting = True
     try:
-        channel = client.get_channel(channel_id)
+        channel = client.get_channel(MAIN_CHANNEL_ID)
         if not channel:
-            print(f"Канал {channel_id} не найден.")
+            print(f"[MAIN] Канал {MAIN_CHANNEL_ID} не найден.")
             return
+        # Если уже подключены — ничего не делаем
+        if client.voice_clients and client.voice_clients[0].is_connected():
+            return
+        # Отключаем старые подключения
         if client.voice_clients:
             try:
                 await client.voice_clients[0].disconnect(force=True)
@@ -56,73 +56,42 @@ async def connect_to_channel(channel_id):
                 pass
             await asyncio.sleep(2)
         await channel.connect(self_mute=True, self_deaf=True)
-        print(f"Подключен к {channel.name} (в полном муте)")
+        print(f"[MAIN] Подключен к {channel.name} (в полном муте)")
     except Exception as e:
-        print(f"Ошибка подключения: {e}")
+        print(f"[MAIN] Ошибка подключения: {e}")
     finally:
         is_reconnecting = False
 
-async def delayed_join(channel_id):
-    """Ждёт 30 секунд. Если человек не вернулся ни в один канал — заходит."""
-    global pending_join
-    try:
-        await asyncio.sleep(30)
-        print("30 секунд прошло. Проверяю, не вернулся ли человек...")
-        # Проверяем, есть ли человек в каком-либо из голосовых каналов сервера
-        guild = client.get_guild(GUILD_ID)
-        if guild:
-            for vc in guild.voice_channels:
-                if any(m.id == USER_ID_EGOIST for m in vc.members):
-                    print("Человек вернулся в другой канал. Не захожу.")
-                    return
-        print("Человек не вернулся. Захожу.")
-        await connect_to_channel(channel_id)
-    except asyncio.CancelledError:
-        print("Таймер отменён.")
-
 @client.event
 async def on_ready():
-    print(f"Авторизован как {client.user}")
+    print(f"[MAIN] Авторизован как {client.user}")
+    await ensure_connected()
 
 @client.event
 async def on_voice_state_update(member, before, after):
-    global pending_join
-
-    if member.id != USER_ID_EGOIST:
+    if member.id != client.user.id:
         return
-
-    # Проверяем, что событие на нашем сервере
-    if before.channel and before.channel.guild.id != GUILD_ID:
-        return
-    if after.channel and after.channel.guild.id != GUILD_ID:
-        return
-
-    # Человек вышел из канала (или перешёл — но не в наш канал)
     if before.channel and not after.channel:
-        print(f"{member} вышел из канала. Жду 30 секунд...")
-        if pending_join and not pending_join.done():
-            pending_join.cancel()
-        pending_join = asyncio.create_task(delayed_join(before.channel.id))
+        print("[MAIN] Бот отключён. Переподключение через 5 секунд...")
+        await asyncio.sleep(5)
+        await ensure_connected()
 
-    # Человек зашёл в канал на нашем сервере
-    elif not before.channel and after.channel:
-        print(f"{member} зашёл в {after.channel.name}. Отменяю таймер.")
-        if pending_join and not pending_join.done():
-            pending_join.cancel()
-            pending_join = None
-        # Если бот сидит — выходит, чтобы не мешать
-        if client.voice_clients:
-            try:
-                await client.voice_clients[0].disconnect(force=True)
-                print("Выхожу, чтобы не мешать.")
-            except Exception as e:
-                print(f"Ошибка отключения: {e}")
+async def watchdog():
+    """Каждые 30 секунд проверяет, что бот в канале."""
+    while True:
+        await asyncio.sleep(30)
+        if not client.voice_clients or not client.voice_clients[0].is_connected():
+            print("[MAIN] Бот не в канале. Переподключаюсь...")
+            await ensure_connected()
 
-    # Человек перешёл в другой канал на нашем сервере
-    elif before.channel and after.channel and before.channel != after.channel:
-        print(f"{member} перешёл в {after.channel.name}. Отменяю таймер (он всё ещё в войсе).")
-        if pending_join and not pending_join.done():
-            pending_join.cancel()
-            pending_join = None
+@client.event
+async def on_ready_watchdog():
+    pass
 
-client.run(TOKEN_EGOIST)
+# Запускаем watchdog после старта
+@client.event
+async def on_ready_start_watchdog():
+    pass
+
+client.loop.create_task(watchdog())
+client.run(TOKEN_MAIN)
