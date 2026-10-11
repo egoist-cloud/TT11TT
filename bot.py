@@ -14,8 +14,11 @@ if not TOKEN or not VOICE_CHANNEL_ID:
 
 VOICE_CHANNEL_ID = int(VOICE_CHANNEL_ID)
 
-# Канал, в который заходить, если бота кикнули из текущего
+PRIMARY_CHANNEL_ID = VOICE_CHANNEL_ID
 FALLBACK_CHANNEL_ID = 1544265694156423228
+
+# Флаг, чтобы не реагировать на свои же действия
+is_reconnecting = False
 
 # --- Веб-сервер для Render (Health Check) ---
 class HealthHandler(BaseHTTPRequestHandler):
@@ -38,12 +41,12 @@ threading.Thread(target=run_web_server, daemon=True).start()
 # ----------------------------------------------------
 
 client = discord.Client()
-current_channel_id = VOICE_CHANNEL_ID
+current_channel_id = PRIMARY_CHANNEL_ID
 
 async def mute_unmute_loop():
     """Каждые 15-30 минут размучивает и замучивает бота."""
     while True:
-        delay = random.randint(900, 1800)  # 15-30 минут в секундах
+        delay = random.randint(900, 1800)
         print(f"Следующий размут через {delay // 60} мин {delay % 60} сек")
         await asyncio.sleep(delay)
 
@@ -52,7 +55,6 @@ async def mute_unmute_loop():
             continue
 
         try:
-            # Размут
             await voice.guild.change_voice_state(
                 channel=voice.channel,
                 self_mute=False,
@@ -61,7 +63,6 @@ async def mute_unmute_loop():
             print("Размучен на 5 секунд...")
             await asyncio.sleep(5)
 
-            # Обратно в мут
             await voice.guild.change_voice_state(
                 channel=voice.channel,
                 self_mute=True,
@@ -73,19 +74,26 @@ async def mute_unmute_loop():
 
 async def connect_to_channel(channel_id):
     """Подключается к указанному каналу."""
-    global current_channel_id
-    channel = client.get_channel(channel_id)
-    if not channel:
-        print(f"Канал {channel_id} не найден.")
+    global current_channel_id, is_reconnecting
+
+    if is_reconnecting:
+        print("Уже идёт переподключение, пропускаю.")
         return None
 
-    if client.voice_clients:
-        try:
-            await client.voice_clients[0].disconnect(force=True)
-        except Exception:
-            pass
-
+    is_reconnecting = True
     try:
+        channel = client.get_channel(channel_id)
+        if not channel:
+            print(f"Канал {channel_id} не найден.")
+            return None
+
+        if client.voice_clients:
+            try:
+                await client.voice_clients[0].disconnect(force=True)
+            except Exception:
+                pass
+            await asyncio.sleep(2)
+
         voice = await channel.connect(self_mute=True, self_deaf=True)
         current_channel_id = channel_id
         print(f"Успешно подключен к {channel.name} (в полном муте)")
@@ -93,13 +101,13 @@ async def connect_to_channel(channel_id):
     except Exception as e:
         print(f"Ошибка при подключении: {e}")
         return None
+    finally:
+        is_reconnecting = False
 
 @client.event
 async def on_ready():
     print(f"Авторизован как {client.user}")
-    await connect_to_channel(VOICE_CHANNEL_ID)
-
-    # Запускаем цикл размута/замута
+    await connect_to_channel(PRIMARY_CHANNEL_ID)
     client.loop.create_task(mute_unmute_loop())
 
 @client.event
@@ -109,22 +117,23 @@ async def on_voice_state_update(member, before, after):
 
     global current_channel_id
 
-    # Случай 1: Бота кикнули из канала (он вышел)
-    if before.channel and not after.channel:
-        print("Бота кикнули из канала. Переподключение через 5 секунд...")
-        await asyncio.sleep(5)
+    # Если бот переподключается сам — игнорируем
+    if is_reconnecting:
+        return
 
-        # Пробуем вернуться в текущий канал
-        voice = await connect_to_channel(current_channel_id)
-        if not voice:
-            print(f"Не удалось вернуться в {current_channel_id}, пробую резервный...")
-            await connect_to_channel(FALLBACK_CHANNEL_ID)
+    # Случай 1: Бота кикнули (он вышел и не подключён)
+    if before.channel and not after.channel:
+        # Проверяем, что это не наш собственный выход
+        if client.voice_clients and client.voice_clients[0].is_connected():
+            return
+
+        print("Бота кикнули. Захожу в резервный канал через 10 секунд...")
+        await asyncio.sleep(10)
+        await connect_to_channel(FALLBACK_CHANNEL_ID)
 
     # Случай 2: Бота перекинули в другой канал
     elif before.channel and after.channel and before.channel != after.channel:
         print(f"Бота перекинули в {after.channel.name}. Остаюсь здесь.")
-        # Просто обновляем текущий ID канала, НЕ переподключаемся
         current_channel_id = after.channel.id
 
-# Запускаем Discord-клиента
 client.run(TOKEN)
