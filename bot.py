@@ -97,10 +97,9 @@ async def on_ready():
             return
 
         if not client.voice_clients:
-            # self_mute=True — выключен микрофон
-            # self_deaf=True — выключены наушники
-            voice = await channel.connect(self_mute=True, self_deaf=True)
-            print(f"Успешно подключен к {channel.name} (в муте и с выключенными наушниками)")
+            # Без параметров self_mute и self_deaf — микрофон и наушники включены
+            voice = await channel.connect()
+            print(f"Успешно подключен к {channel.name}")
             play_music(voice, current_track)
         else:
             print("Уже подключен к голосовому каналу.")
@@ -128,28 +127,34 @@ async def on_message(message):
     if content.startswith("!play"):
         parts = content.split()
         if len(parts) < 2:
-            await message.channel.send("Укажите номер трека: `!play 1`")
+            msg = await message.channel.send("Укажите номер трека: `!play 1`")
+            await msg.delete(delay=300)
             return
         track_key = parts[1]
         if track_key not in TRACKS:
-            await message.channel.send(f"Трек `{track_key}` не найден. Доступные: {', '.join(TRACKS.keys())}")
+            msg = await message.channel.send(f"Трек `{track_key}` не найден. Доступные: {', '.join(TRACKS.keys())}")
+            await msg.delete(delay=300)
             return
         voice.stop()
         play_music(voice, track_key)
-        await message.channel.send(f"Включаю трек {track_key} (YouTube).")
+        msg = await message.channel.send(f"Включаю трек {track_key} (YouTube).")
+        await msg.delete(delay=300)
 
     # Команда !stop
     elif content == "!stop":
         if voice.is_playing():
             voice.stop()
-            await message.channel.send("Музыка остановлена.")
+            msg = await message.channel.send("Музыка остановлена.")
+            await msg.delete(delay=300)
         else:
-            await message.channel.send("Музыка и так не играет.")
+            msg = await message.channel.send("Музыка и так не играет.")
+            await msg.delete(delay=300)
 
     # Команда !list
     elif content == "!list":
         track_list = "\n".join([f"`{k}` — {v}" for k, v in TRACKS.items()])
-        await message.channel.send(f"Доступные треки:\n{track_list}")
+        msg = await message.channel.send(f"Доступные треки:\n{track_list}")
+        await msg.delete(delay=300)
 
 @client.event
 async def on_voice_state_update(member, before, after):
@@ -161,8 +166,8 @@ async def on_voice_state_update(member, before, after):
             try:
                 channel = client.get_channel(VOICE_CHANNEL_ID)
                 if channel:
-                    voice = await channel.connect(self_mute=True, self_deaf=True)
-                    print("Переподключение успешно (в муте и с выключенными наушниками).")
+                    voice = await channel.connect()
+                    print("Переподключение успешно.")
                     play_music(voice, current_track)
             except Exception as e:
                 print(f"Не удалось переподключиться: {e}")
