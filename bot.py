@@ -37,13 +37,8 @@ print(f"  GUILD_ID: {GUILD_ID}", flush=True)
 print(f"  MAIN_CHANNEL_ID: {MAIN_CHANNEL_ID}", flush=True)
 print("=" * 50, flush=True)
 
-if not TOKEN_MAIN or not TOKEN_EGOIST or not TOKEN_EGORIK:
-    raise ValueError("Не заданы DISCORD_TOKEN_1/2/3")
-if not GUILD_ID:
-    raise ValueError("Не задан GUILD_ID")
-
 # ====================================================
-# ВЕБ-СЕРВЕР ДЛЯ RENDER
+# ВЕБ-СЕРВЕР
 # ====================================================
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -64,7 +59,7 @@ def run_web_server():
 threading.Thread(target=run_web_server, daemon=True).start()
 
 # ====================================================
-# АККАУНТ №1: СИДИТ 24/7
+# АККАУНТ №1: 24/7
 # ====================================================
 main_client = discord.Client()
 main_reconnecting = False
@@ -92,14 +87,13 @@ async def ensure_main_connected():
         for attempt in range(3):
             try:
                 await channel.connect(self_mute=True, self_deaf=True, timeout=30.0)
-                print(f"[MAIN] Подключен к {channel.name} (в полном муте)", flush=True)
+                print(f"[MAIN] Подключен к {channel.name}", flush=True)
                 return
             except Exception as e:
-                print(f"[MAIN] Попытка {attempt + 1} не удалась: {type(e).__name__}: {e}", flush=True)
+                print(f"[MAIN] Попытка {attempt + 1}: {type(e).__name__}: {e}", flush=True)
                 await asyncio.sleep(10)
-        print("[MAIN] Не удалось подключиться после 3 попыток.", flush=True)
     except Exception as e:
-        print(f"[MAIN] Ошибка подключения: {e}", flush=True)
+        print(f"[MAIN] Ошибка: {e}", flush=True)
         traceback.print_exc()
     finally:
         main_reconnecting = False
@@ -110,7 +104,7 @@ async def main_watchdog():
         if (not main_client.voice_clients
                 or not main_client.voice_clients[0].is_connected()
                 or main_client.voice_clients[0].channel.id != MAIN_CHANNEL_ID):
-            print("[MAIN] Бот не в нужном канале. Переподключаюсь...", flush=True)
+            print("[MAIN] Бот не в канале. Переподключаюсь...", flush=True)
             await ensure_main_connected()
 
 @main_client.event
@@ -124,12 +118,12 @@ async def on_voice_state_update(member, before, after):
     if member.id != main_client.user.id:
         return
     if before.channel and not after.channel:
-        print("[MAIN] Кикнули. Переподключаюсь через 5 секунд...", flush=True)
+        print("[MAIN] Кикнули. Переподключаюсь...", flush=True)
         await asyncio.sleep(5)
         await ensure_main_connected()
 
 # ====================================================
-# ДЕЖУРНЫЙ АККАУНТ (только когда человек ОФЛАЙН)
+# ДЕЖУРНЫЙ АККАУНТ (команды в личке и в чате канала)
 # ====================================================
 class Watcher:
     def __init__(self, token, user_id, name):
@@ -138,7 +132,7 @@ class Watcher:
         self.name = name
         self.client = discord.Client()
         self.is_reconnecting = False
-        self.pending_join = None
+        self.manual_mode = False
         self._register_events()
 
     def _register_events(self):
@@ -147,27 +141,81 @@ class Watcher:
             print(f"[{self.name}] Авторизован как {self.client.user}", flush=True)
 
         @self.client.event
+        async def on_message(message):
+            # Игнорируем свои сообщения
+            if message.author.id == self.client.user.id:
+                return
+
+            # Команды принимаем только от владельца
+            if message.author.id != self.user_id:
+                return
+
+            content = message.content.strip().lower()
+
+            # Проверяем, откуда пришло сообщение
+            is_dm = isinstance(message.channel, discord.DMChannel)
+            voice = self.client.voice_clients[0] if self.client.voice_clients else None
+            is_in_voice_chat = (
+                voice and voice.channel and message.channel.id == voice.channel.id
+            )
+
+            # Реагируем только на личку или текстовый чат канала, где сидит бот
+            if not (is_dm or is_in_voice_chat):
+                return
+
+            # !on — включить режим 24/7
+            if content == "!on":
+                print(f"[{self.name}] Команда !on. Подключаюсь.", flush=True)
+                self.manual_mode = True
+                await self.connect(MAIN_CHANNEL_ID)
+                try:
+                    await message.channel.send("✅ Бот включён. Сижу в канале 24/7.")
+                except Exception:
+                    pass
+
+            # !off — выключить
+            elif content == "!off":
+                print(f"[{self.name}] Команда !off. Отключаюсь.", flush=True)
+                self.manual_mode = False
+                await self.disconnect()
+                try:
+                    await message.channel.send("⛔ Бот выключен.")
+                except Exception:
+                    pass
+
+            # !status — проверить состояние
+            elif content == "!status":
+                state = "включён (24/7)" if self.manual_mode else "авто-режим"
+                in_channel = bool(
+                    self.client.voice_clients
+                    and self.client.voice_clients[0].is_connected()
+                )
+                try:
+                    await message.channel.send(
+                        f"Режим: {state}\nВ канале: {'да' if in_channel else 'нет'}"
+                    )
+                except Exception:
+                    pass
+
+        @self.client.event
         async def on_presence_update(before, after):
+            if self.manual_mode:
+                return
             if after.id != self.user_id:
                 return
-            # Человек ушёл в офлайн — заходим
+
             if after.status == discord.Status.offline:
-                print(f"[{self.name}] {after} ушёл в офлайн. Захожу через 30 секунд...", flush=True)
-                if self.pending_join and not self.pending_join.done():
-                    self.pending_join.cancel()
-                self.pending_join = asyncio.create_task(
-                    self.delayed_join(MAIN_CHANNEL_ID)
-                )
-            # Человек вернулся в онлайн — выходим
+                print(f"[{self.name}] {after} ушёл в офлайн. Захожу через 30 сек.", flush=True)
+                await asyncio.sleep(30)
+                await self.connect(MAIN_CHANNEL_ID)
             elif after.status != discord.Status.offline:
-                print(f"[{self.name}] {after} вернулся в онлайн. Выхожу.", flush=True)
-                if self.pending_join and not self.pending_join.done():
-                    self.pending_join.cancel()
-                    self.pending_join = None
+                print(f"[{self.name}] {after} вернулся. Выхожу.", flush=True)
                 await self.disconnect()
 
         @self.client.event
         async def on_voice_state_update(member, before, after):
+            if self.manual_mode:
+                return
             if member.id == self.client.user.id:
                 return
             if member.id != self.user_id:
@@ -177,45 +225,12 @@ class Watcher:
             if after.channel and after.channel.guild.id != GUILD_ID:
                 return
 
-            # Человек ВЫШЕЛ
             if before.channel and not after.channel:
                 if member.status == discord.Status.offline:
-                    print(f"[{self.name}] {member} вышел и офлайн. Захожу.", flush=True)
                     await asyncio.sleep(5)
                     await self.connect(before.channel.id)
-                else:
-                    print(f"[{self.name}] {member} вышел, но онлайн. Не захожу.", flush=True)
-
-            # Человек ЗАШЁЛ
             elif not before.channel and after.channel:
-                print(f"[{self.name}] {member} зашёл. Выхожу.", flush=True)
-                if self.pending_join and not self.pending_join.done():
-                    self.pending_join.cancel()
-                    self.pending_join = None
                 await self.disconnect()
-
-            # Человек ПЕРЕШЁЛ
-            elif before.channel and after.channel and before.channel != after.channel:
-                print(f"[{self.name}] {member} перешёл. Отменяю таймер.", flush=True)
-                if self.pending_join and not self.pending_join.done():
-                    self.pending_join.cancel()
-                    self.pending_join = None
-                await self.disconnect()
-
-    async def delayed_join(self, channel_id):
-        try:
-            await asyncio.sleep(30)
-            print(f"[{self.name}] 30 секунд прошло. Проверяю статус...", flush=True)
-            guild = self.client.get_guild(GUILD_ID)
-            if guild:
-                member = guild.get_member(self.user_id)
-                if member and member.status != discord.Status.offline:
-                    print(f"[{self.name}] Человек уже онлайн. Не захожу.", flush=True)
-                    return
-            print(f"[{self.name}] Человек офлайн. Захожу.", flush=True)
-            await self.connect(channel_id)
-        except asyncio.CancelledError:
-            print(f"[{self.name}] Таймер отменён.", flush=True)
 
     async def connect(self, channel_id):
         if self.is_reconnecting:
@@ -233,7 +248,7 @@ class Watcher:
                     pass
                 await asyncio.sleep(2)
             await channel.connect(self_mute=True, self_deaf=True, timeout=30.0)
-            print(f"[{self.name}] Подключен к {channel.name} (в полном муте)", flush=True)
+            print(f"[{self.name}] Подключен к {channel.name}", flush=True)
         except Exception as e:
             print(f"[{self.name}] Ошибка: {type(e).__name__}: {e}", flush=True)
             traceback.print_exc()
@@ -280,5 +295,5 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except Exception as e:
-        print(f"КРИТИЧЕСКАЯ ОШИБКА В ASYNCIO.RUN: {e}", flush=True)
+        print(f"КРИТИЧЕСКАЯ ОШИБКА: {e}", flush=True)
         traceback.print_exc()
