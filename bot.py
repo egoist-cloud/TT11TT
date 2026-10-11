@@ -1,19 +1,107 @@
+import os
+import asyncio
+import discord
+from http.server import HTTPServer, BaseHTTPRequestHandler
+import threading
+
+# --- Чтение переменных окружения ---
+TOKEN = os.getenv("DISCORD_TOKEN")
+VOICE_CHANNEL_ID = os.getenv("VOICE_CHANNEL_ID")
+
+if not TOKEN or not VOICE_CHANNEL_ID:
+    raise ValueError("Не заданы переменные окружения DISCORD_TOKEN или VOICE_CHANNEL_ID")
+
+VOICE_CHANNEL_ID = int(VOICE_CHANNEL_ID)
+
+# --- Список доступных треков ---
+TRACKS = {
+    "1": "music.mp3",
+    # "2": "music2.mp3",  # добавьте второй файл в репозиторий и раскомментируйте
+}
+
+current_track = "1"
+
+# --- Веб-сервер для Render (Health Check) ---
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"Bot is running")
+
+    def log_message(self, format, *args):
+        pass
+
+def run_web_server():
+    port = int(os.getenv("PORT", 10000))
+    server = HTTPServer(("0.0.0.0", port), HealthHandler)
+    print(f"Веб-сервер запущен на порту {port}")
+    server.serve_forever()
+
+threading.Thread(target=run_web_server, daemon=True).start()
+# ----------------------------------------------------
+
+client = discord.Client()
+
+def play_music(voice_client, track_key):
+    """Запускает трек и ставит его на повтор."""
+    global current_track
+    current_track = track_key
+
+    if not voice_client or not voice_client.is_connected():
+        return
+    try:
+        filename = TRACKS.get(track_key)
+        if not filename:
+            print(f"Трек {track_key} не найден.")
+            return
+        source = discord.FFmpegPCMAudio(filename)
+        voice_client.play(source, after=lambda e: play_music(voice_client, current_track))
+        print(f"Играет трек {track_key}: {filename}")
+    except Exception as e:
+        print(f"Ошибка при воспроизведении: {e}")
+
+def get_voice_client():
+    """Возвращает текущий голосовой клиент, если он есть."""
+    if client.voice_clients:
+        return client.voice_clients[0]
+    return None
+
+@client.event
+async def on_ready():
+    print(f"Авторизован как {client.user}")
+    print(f"Попытка подключиться к каналу {VOICE_CHANNEL_ID}...")
+
+    try:
+        channel = client.get_channel(VOICE_CHANNEL_ID)
+        if not channel:
+            print("Канал не найден. Проверьте ID и права доступа.")
+            return
+
+        if not client.voice_clients:
+            # self_mute=True — выключен микрофон
+            # self_deaf=True — выключены наушники
+            voice = await channel.connect(self_mute=True, self_deaf=True)
+            print(f"Успешно подключен к {channel.name} (в муте и с выключенными наушниками)")
+            play_music(voice, current_track)
+        else:
+            print("Уже подключен к голосовому каналу.")
+    except Exception as e:
+        print(f"Ошибка при подключении: {e}")
+
 @client.event
 async def on_message(message):
     # Игнорируем сообщения от самого себя
     if message.author.id == client.user.id:
         return
 
-    # Проверяем, что сообщение пришло из текстового чата того же канала,
-    # где сидит бот (если у канала есть текстовый чат)
     voice = get_voice_client()
     if not voice or not voice.channel:
         return
 
-    # Если у голосового канала есть текстовый чат, его ID совпадает с ID канала
-    # В discord.py у голосового канала может быть атрибут .text_channel или проверка по ID
+    # Реагируем только на текстовый чат того же канала, где сидит бот,
+    # либо на личные сообщения
     if message.channel.id != voice.channel.id:
-        # Разрешаем также команды в личке бота
         if not isinstance(message.channel, discord.DMChannel):
             return
 
@@ -45,3 +133,22 @@ async def on_message(message):
     elif content == "!list":
         track_list = "\n".join([f"`{k}` — {v}" for k, v in TRACKS.items()])
         await message.channel.send(f"Доступные треки:\n{track_list}")
+
+@client.event
+async def on_voice_state_update(member, before, after):
+    # Если нас случайно отключили, пытаемся переподключиться
+    if member.id == client.user.id:
+        if before.channel and not after.channel:
+            print("Соединение потеряно. Переподключение через 5 секунд...")
+            await asyncio.sleep(5)
+            try:
+                channel = client.get_channel(VOICE_CHANNEL_ID)
+                if channel:
+                    voice = await channel.connect(self_mute=True, self_deaf=True)
+                    print("Переподключение успешно (в муте и с выключенными наушниками).")
+                    play_music(voice, current_track)
+            except Exception as e:
+                print(f"Не удалось переподключиться: {e}")
+
+# Запускаем Discord-клиента
+client.run(TOKEN)
