@@ -37,7 +37,7 @@ threading.Thread(target=run_web_server, daemon=True).start()
 
 client = discord.Client()
 is_reconnecting = False
-pending_join = None  # задача ожидания
+pending_join = None  # задача ожидания 30 секунд
 
 async def connect_to_channel(channel_id):
     global is_reconnecting
@@ -63,21 +63,22 @@ async def connect_to_channel(channel_id):
         is_reconnecting = False
 
 async def delayed_join(channel_id):
-    """Ждёт 30 секунд и заходит, если человек не вернулся."""
+    """Ждёт 30 секунд. Если человек не вернулся ни в один канал — заходит."""
     global pending_join
     try:
         await asyncio.sleep(30)
-        # Проверяем, что человек всё ещё не в канале
-        channel = client.get_channel(channel_id)
-        if not channel:
-            return
-        if any(m.id == USER_ID_EGOIST for m in channel.members):
-            print("Человек вернулся до истечения таймера.")
-            return
-        print("30 секунд прошло. Захожу.")
+        print("30 секунд прошло. Проверяю, не вернулся ли человек...")
+        # Проверяем, есть ли человек в каком-либо из голосовых каналов сервера
+        guild = client.get_guild(GUILD_ID)
+        if guild:
+            for vc in guild.voice_channels:
+                if any(m.id == USER_ID_EGOIST for m in vc.members):
+                    print("Человек вернулся в другой канал. Не захожу.")
+                    return
+        print("Человек не вернулся. Захожу.")
         await connect_to_channel(channel_id)
     except asyncio.CancelledError:
-        print("Таймер отменён — человек вернулся.")
+        print("Таймер отменён.")
 
 @client.event
 async def on_ready():
@@ -96,29 +97,30 @@ async def on_voice_state_update(member, before, after):
     if after.channel and after.channel.guild.id != GUILD_ID:
         return
 
-    # Человек вышел из канала — запускаем таймер на 30 секунд
+    # Человек вышел из канала (или перешёл — но не в наш канал)
     if before.channel and not after.channel:
-        print(f"{member} вышел. Жду 30 секунд...")
+        print(f"{member} вышел из канала. Жду 30 секунд...")
         if pending_join and not pending_join.done():
             pending_join.cancel()
         pending_join = asyncio.create_task(delayed_join(before.channel.id))
 
-    # Человек зашёл в канал — отменяем таймер и выходим, если сидим
+    # Человек зашёл в канал на нашем сервере
     elif not before.channel and after.channel:
-        print(f"{member} зашёл. Отменяю таймер.")
+        print(f"{member} зашёл в {after.channel.name}. Отменяю таймер.")
         if pending_join and not pending_join.done():
             pending_join.cancel()
             pending_join = None
+        # Если бот сидит — выходит, чтобы не мешать
         if client.voice_clients:
             try:
                 await client.voice_clients[0].disconnect(force=True)
-                print("Выхожу.")
+                print("Выхожу, чтобы не мешать.")
             except Exception as e:
                 print(f"Ошибка отключения: {e}")
 
-    # Человек перешёл в другой канал — отменяем таймер
+    # Человек перешёл в другой канал на нашем сервере
     elif before.channel and after.channel and before.channel != after.channel:
-        print(f"{member} перешёл. Отменяю таймер.")
+        print(f"{member} перешёл в {after.channel.name}. Отменяю таймер (он всё ещё в войсе).")
         if pending_join and not pending_join.done():
             pending_join.cancel()
             pending_join = None
