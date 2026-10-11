@@ -20,7 +20,7 @@ VOICE_CHANNEL_ID = int(VOICE_CHANNEL_ID)
 # Текущий трек (по умолчанию первый)
 current_track = "1"
 
-# --- Веб-сервер для Render (Health Check) ---
+# --- Веб-сервер для Render ---
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -48,6 +48,7 @@ def get_audio_source(url):
         'format': 'bestaudio/best',
         'quiet': True,
         'no_warnings': True,
+        'cookiefile': 'youtube-cookies.txt',  # <-- Файл с cookies
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=False)
