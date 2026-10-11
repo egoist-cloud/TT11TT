@@ -16,7 +16,8 @@ sys.stderr.reconfigure(line_buffering=True)
 # ЧТЕНИЕ ПЕРЕМЕННЫХ
 # ====================================================
 TOKEN_MAIN = os.getenv("DISCORD_TOKEN_1")
-MAIN_CHANNEL_ID = int(os.getenv("VOICE_CHANNEL_ID", "1241013075151425650"))
+# ID голосового канала TALENT (НЕ лички!)
+MAIN_CHANNEL_ID = int(os.getenv("VOICE_CHANNEL_ID", "0"))
 
 TOKEN_EGOIST = os.getenv("DISCORD_TOKEN_2")
 USER_ID_EGOIST = int(os.getenv("USER_ID_1"))
@@ -41,8 +42,11 @@ print(f"  MAIN_CHANNEL_ID: {MAIN_CHANNEL_ID}", flush=True)
 print(f"  MAIN_BOT_USER_ID: {MAIN_BOT_USER_ID}", flush=True)
 print("=" * 50, flush=True)
 
+if not MAIN_CHANNEL_ID:
+    raise ValueError("Не задан VOICE_CHANNEL_ID (ID голосового канала TALENT)")
+
 # ====================================================
-# ВЕБ-СЕРВЕР ДЛЯ RENDER
+# ВЕБ-СЕРВЕР
 # ====================================================
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -63,7 +67,7 @@ def run_web_server():
 threading.Thread(target=run_web_server, daemon=True).start()
 
 # ====================================================
-# АККАУНТ №1 (commback): СИДИТ 24/7 + ПРИНИМАЕТ КОМАНДЫ
+# АККАУНТ №1 (commback): 24/7 + ПРИНИМАЕТ КОМАНДЫ
 # ====================================================
 main_client = discord.Client()
 main_reconnecting = False
@@ -132,15 +136,10 @@ async def on_voice_state_update(member, before, after):
 
 @main_client.event
 async def on_message(message):
-    # Игнорируем свои сообщения
     if message.author.id == main_client.user.id:
         return
-
-    # Принимаем команды ТОЛЬКО в личке
     if not isinstance(message.channel, discord.DMChannel):
         return
-
-    # Принимаем команды только от egoist или egorik
     if message.author.id not in (USER_ID_EGOIST, USER_ID_EGORIK):
         print(f"[MAIN] Команда от неизвестного пользователя {message.author.id} проигнорирована.", flush=True)
         return
