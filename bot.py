@@ -41,7 +41,9 @@ def run_web_server():
 threading.Thread(target=run_web_server, daemon=True).start()
 # ----------------------------------------------------
 
-# --- Аккаунт №1: сидит 24/7 с watchdog ---
+# ====================================================
+# АККАУНТ №1: СИДИТ 24/7 С WATCHDOG
+# ====================================================
 main_client = discord.Client()
 main_reconnecting = False
 
@@ -92,7 +94,9 @@ async def on_voice_state_update(member, before, after):
         await asyncio.sleep(5)
         await ensure_main_connected()
 
-# --- Дежурный аккаунт (следит за человеком) ---
+# ====================================================
+# ДЕЖУРНЫЙ АККАУНТ
+# ====================================================
 class Watcher:
     def __init__(self, token, user_id, name):
         self.token = token
@@ -110,9 +114,15 @@ class Watcher:
 
         @self.client.event
         async def on_voice_state_update(member, before, after):
+            # ИГНОРИРУЕМ СВОИ СОБСТВЕННЫЕ СОБЫТИЯ
+            if member.id == self.client.user.id:
+                return
+
+            # Следим только за нужным человеком
             if member.id != self.user_id:
                 return
 
+            # Проверяем, что событие на нашем сервере
             if before.channel and before.channel.guild.id != GUILD_ID:
                 return
             if after.channel and after.channel.guild.id != GUILD_ID:
@@ -191,7 +201,9 @@ class Watcher:
     async def start(self):
         await self.client.start(self.token)
 
-# --- Запуск ---
+# ====================================================
+# ЗАПУСК
+# ====================================================
 async def main():
     watcher_egoist = Watcher(TOKEN_EGOIST, USER_ID_EGOIST, "Egoist")
     watcher_egorik = Watcher(TOKEN_EGORIK, USER_ID_EGORIK, "Egorik")
