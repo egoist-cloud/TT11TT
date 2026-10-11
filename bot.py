@@ -5,22 +5,22 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
 
 # --- Токены ---
-# Аккаунт №1 (бот, сидит 24/7)
+# Аккаунт №1 (сидит 24/7)
 TOKEN_MAIN = os.getenv("DISCORD_TOKEN_1")
 MAIN_CHANNEL_ID = int(os.getenv("VOICE_CHANNEL_ID", "1558455255791050803"))
 
-# Аккаунты №2 и №3 (следят за людьми)
-TOKEN_WATCH_1 = os.getenv("DISCORD_TOKEN_2")
-USER_ID_1 = int(os.getenv("USER_ID_1"))
+# Аккаунт №2 (следит за egoist)
+TOKEN_EGOIST = os.getenv("DISCORD_TOKEN_2")
+USER_ID_EGOIST = int(os.getenv("USER_ID_1"))
 
-TOKEN_WATCH_2 = os.getenv("DISCORD_TOKEN_3")
-USER_ID_2 = int(os.getenv("USER_ID_2"))
+# Аккаунт №3 (следит за egorik)
+TOKEN_EGORIK = os.getenv("DISCORD_TOKEN_3")
+USER_ID_EGORIK = int(os.getenv("USER_ID_2"))
 
-# ID сервера, на котором сидят люди
 GUILD_ID = int(os.getenv("GUILD_ID"))
 
-if not TOKEN_MAIN or not TOKEN_WATCH_1 or not TOKEN_WATCH_2:
-    raise ValueError("Не заданы DISCORD_TOKEN_1, DISCORD_TOKEN_2 или DISCORD_TOKEN_3")
+if not TOKEN_MAIN or not TOKEN_EGOIST or not TOKEN_EGORIK:
+    raise ValueError("Не заданы DISCORD_TOKEN_1/2/3")
 if not GUILD_ID:
     raise ValueError("Не задан GUILD_ID")
 
@@ -76,8 +76,8 @@ async def on_voice_state_update(member, before, after):
         except Exception as e:
             print(f"[MAIN] Ошибка переподключения: {e}")
 
-# --- Дежурный аккаунт ---
-class Watcher:
+# --- Дежурный аккаунт: следит за своим же «человеческим» аккаунтом ---
+class SelfWatcher:
     def __init__(self, token, user_id, name):
         self.token = token
         self.user_id = user_id
@@ -94,31 +94,31 @@ class Watcher:
 
         @self.client.event
         async def on_voice_state_update(member, before, after):
-            # Следим только за нужным человеком
+            # Следим только за нужным пользователем
             if member.id != self.user_id:
                 return
 
-            # Проверяем, что событие произошло на НУЖНОМ сервере
+            # Проверяем, что событие на нашем сервере
             if before.channel and before.channel.guild.id != GUILD_ID:
                 return
             if after.channel and after.channel.guild.id != GUILD_ID:
                 return
 
-            # Человек вышел из канала на нашем сервере
+            # Человек вышел — заходим через 5 секунд
             if before.channel and not after.channel:
                 print(f"[{self.name}] {member} вышел. Захожу в {before.channel.name}")
                 await asyncio.sleep(5)
                 await self.connect(before.channel.id)
 
-            # Человек перешёл в другой канал на нашем сервере
+            # Человек перешёл — следуем
             elif before.channel and after.channel and before.channel != after.channel:
                 print(f"[{self.name}] {member} перешёл в {after.channel.name}. Следую.")
                 await asyncio.sleep(5)
                 await self.connect(after.channel.id)
 
-            # Человек вернулся в канал на нашем сервере
+            # Человек зашёл — выходим, чтобы не мешать
             elif not before.channel and after.channel:
-                print(f"[{self.name}] {member} вернулся. Выхожу.")
+                print(f"[{self.name}] {member} зашёл. Выхожу.")
                 await self.disconnect()
 
     async def connect(self, channel_id):
@@ -156,8 +156,8 @@ class Watcher:
 
 # --- Запуск ---
 async def main():
-    watcher1 = Watcher(TOKEN_WATCH_1, USER_ID_1, "Watch-1")
-    watcher2 = Watcher(TOKEN_WATCH_2, USER_ID_2, "Watch-2")
+    watcher1 = SelfWatcher(TOKEN_EGOIST, USER_ID_EGOIST, "Egoist")
+    watcher2 = SelfWatcher(TOKEN_EGORIK, USER_ID_EGORIK, "Egorik")
 
     await asyncio.gather(
         main_client.start(TOKEN_MAIN),
