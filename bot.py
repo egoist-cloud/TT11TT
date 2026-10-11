@@ -1,7 +1,6 @@
 import os
 import asyncio
 import discord
-from discord.ext.native_voice import VoiceClient, FFmpegMediaSource
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
 
@@ -14,7 +13,7 @@ if not TOKEN or not VOICE_CHANNEL_ID:
 
 VOICE_CHANNEL_ID = int(VOICE_CHANNEL_ID)
 
-# --- Веб-сервер для Render ---
+# --- Веб-сервер для Render (Health Check) ---
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -47,27 +46,23 @@ async def on_ready():
             print("Канал не найден. Проверьте ID и права доступа.")
             return
 
-        # Подключаемся с выключенным микрофоном и включенной камерой
-        voice = await channel.connect(cls=VoiceClient, self_mute=True, self_video=True)
-        print(f"Успешно подключен к {channel.name} (в муте, с видео)")
+        # Подключаемся с выключенным микрофоном
+        if not client.voice_clients:
+            voice = await channel.connect(self_mute=True)
+            print(f"Успешно подключен к {channel.name} (в муте)")
 
-        # Запускаем видео-фон
-        source = FFmpegMediaSource.from_file(
-            'output.mp4',
-            'H264',
-            width=1280,
-            height=720,
-            fps=30,
-            bitrate=4_000_000,
-        )
-        voice.play(source)
-        print("Воспроизведение видео запущено.")
-
+            # Запускаем музыку
+            source = discord.FFmpegPCMAudio('music.mp3')
+            voice.play(source)
+            print("Воспроизведение музыки запущено.")
+        else:
+            print("Уже подключен к голосовому каналу.")
     except Exception as e:
         print(f"Ошибка при подключении: {e}")
 
 @client.event
 async def on_voice_state_update(member, before, after):
+    # Если нас случайно отключили, пытаемся переподключиться
     if member.id == client.user.id:
         if before.channel and not after.channel:
             print("Соединение потеряно. Переподключение через 5 секунд...")
@@ -75,17 +70,10 @@ async def on_voice_state_update(member, before, after):
             try:
                 channel = client.get_channel(VOICE_CHANNEL_ID)
                 if channel:
-                    voice = await channel.connect(cls=VoiceClient, self_mute=True, self_video=True)
-                    source = FFmpegMediaSource.from_file(
-                        'output.mp4',
-                        'H264',
-                        width=1280,
-                        height=720,
-                        fps=30,
-                        bitrate=4_000_000,
-                    )
+                    voice = await channel.connect(self_mute=True)
+                    source = discord.FFmpegPCMAudio('music.mp3')
                     voice.play(source)
-                    print("Переподключение успешно.")
+                    print("Переподключение успешно (в муте).")
             except Exception as e:
                 print(f"Не удалось переподключиться: {e}")
 
