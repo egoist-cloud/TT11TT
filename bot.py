@@ -3,8 +3,11 @@ import asyncio
 import discord
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
+import traceback
 
-# --- Токены ---
+# ====================================================
+# ЧТЕНИЕ ПЕРЕМЕННЫХ
+# ====================================================
 TOKEN_MAIN = os.getenv("DISCORD_TOKEN_1")
 MAIN_CHANNEL_ID = int(os.getenv("VOICE_CHANNEL_ID", "1558455255791050803"))
 
@@ -16,12 +19,25 @@ USER_ID_EGORIK = int(os.getenv("USER_ID_2"))
 
 GUILD_ID = int(os.getenv("GUILD_ID"))
 
+print("=" * 50)
+print("ЗАГРУЗКА ПЕРЕМЕННЫХ:")
+print(f"  TOKEN_MAIN: {'есть' if TOKEN_MAIN else 'НЕТ'}")
+print(f"  TOKEN_EGOIST: {'есть' if TOKEN_EGOIST else 'НЕТ'}")
+print(f"  TOKEN_EGORIK: {'есть' if TOKEN_EGORIK else 'НЕТ'}")
+print(f"  USER_ID_EGOIST: {USER_ID_EGOIST}")
+print(f"  USER_ID_EGORIK: {USER_ID_EGORIK}")
+print(f"  GUILD_ID: {GUILD_ID}")
+print(f"  MAIN_CHANNEL_ID: {MAIN_CHANNEL_ID}")
+print("=" * 50)
+
 if not TOKEN_MAIN or not TOKEN_EGOIST or not TOKEN_EGORIK:
     raise ValueError("Не заданы DISCORD_TOKEN_1/2/3")
 if not GUILD_ID:
     raise ValueError("Не задан GUILD_ID")
 
-# --- Веб-сервер для Render (Health Check) ---
+# ====================================================
+# ВЕБ-СЕРВЕР ДЛЯ RENDER
+# ====================================================
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -39,10 +55,9 @@ def run_web_server():
     server.serve_forever()
 
 threading.Thread(target=run_web_server, daemon=True).start()
-# ----------------------------------------------------
 
 # ====================================================
-# АККАУНТ №1: СИДИТ 24/7 С WATCHDOG
+# АККАУНТ №1: СИДИТ 24/7
 # ====================================================
 main_client = discord.Client()
 main_reconnecting = False
@@ -69,6 +84,7 @@ async def ensure_main_connected():
         print(f"[MAIN] Подключен к {channel.name} (в полном муте)")
     except Exception as e:
         print(f"[MAIN] Ошибка подключения: {e}")
+        traceback.print_exc()
     finally:
         main_reconnecting = False
 
@@ -114,21 +130,16 @@ class Watcher:
 
         @self.client.event
         async def on_voice_state_update(member, before, after):
-            # ИГНОРИРУЕМ СВОИ СОБСТВЕННЫЕ СОБЫТИЯ
             if member.id == self.client.user.id:
                 return
-
-            # Следим только за нужным человеком
             if member.id != self.user_id:
                 return
-
-            # Проверяем, что событие на нашем сервере
             if before.channel and before.channel.guild.id != GUILD_ID:
                 return
             if after.channel and after.channel.guild.id != GUILD_ID:
                 return
 
-            # Человек ВЫШЕЛ из канала
+            # Человек ВЫШЕЛ
             if before.channel and not after.channel:
                 print(f"[{self.name}] {member} вышел. Жду 30 секунд...")
                 if self.pending_join and not self.pending_join.done():
@@ -137,7 +148,7 @@ class Watcher:
                     self.delayed_join(before.channel.id)
                 )
 
-            # Человек ЗАШЁЛ в канал
+            # Человек ЗАШЁЛ
             elif not before.channel and after.channel:
                 print(f"[{self.name}] {member} зашёл. Отменяю таймер и выхожу.")
                 if self.pending_join and not self.pending_join.done():
@@ -145,7 +156,7 @@ class Watcher:
                     self.pending_join = None
                 await self.disconnect()
 
-            # Человек ПЕРЕШЁЛ в другой канал
+            # Человек ПЕРЕШЁЛ
             elif before.channel and after.channel and before.channel != after.channel:
                 print(f"[{self.name}] {member} перешёл в {after.channel.name}. Отменяю таймер.")
                 if self.pending_join and not self.pending_join.done():
@@ -187,6 +198,7 @@ class Watcher:
             print(f"[{self.name}] Подключен к {channel.name} (в полном муте)")
         except Exception as e:
             print(f"[{self.name}] Ошибка: {e}")
+            traceback.print_exc()
         finally:
             self.is_reconnecting = False
 
@@ -199,20 +211,36 @@ class Watcher:
                 print(f"[{self.name}] Ошибка отключения: {e}")
 
     async def start(self):
-        await self.client.start(self.token)
+        try:
+            await self.client.start(self.token)
+        except Exception as e:
+            print(f"[{self.name}] КРИТИЧЕСКАЯ ОШИБКА: {e}")
+            traceback.print_exc()
 
 # ====================================================
 # ЗАПУСК
 # ====================================================
 async def main():
+    print("=" * 50)
+    print("ЗАПУСК БОТОВ...")
+    print("=" * 50)
+
     watcher_egoist = Watcher(TOKEN_EGOIST, USER_ID_EGOIST, "Egoist")
     watcher_egorik = Watcher(TOKEN_EGORIK, USER_ID_EGORIK, "Egorik")
 
-    await asyncio.gather(
-        main_client.start(TOKEN_MAIN),
-        watcher_egoist.start(),
-        watcher_egorik.start(),
-    )
+    try:
+        await asyncio.gather(
+            main_client.start(TOKEN_MAIN),
+            watcher_egoist.start(),
+            watcher_egorik.start(),
+        )
+    except Exception as e:
+        print(f"КРИТИЧЕСКАЯ ОШИБКА В GATHER: {e}")
+        traceback.print_exc()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except Exception as e:
+        print(f"КРИТИЧЕСКАЯ ОШИБКА В ASYNCIO.RUN: {e}")
+        traceback.print_exc()
