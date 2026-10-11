@@ -20,7 +20,7 @@ VOICE_CHANNEL_ID = int(VOICE_CHANNEL_ID)
 # Текущий трек (по умолчанию первый)
 current_track = "1"
 
-# --- Веб-сервер для Render ---
+# --- Веб-сервер для Render (Health Check) ---
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -48,7 +48,7 @@ def get_audio_source(url):
         'format': 'bestaudio/best',
         'quiet': True,
         'no_warnings': True,
-        'cookiefile': 'youtube-cookies.txt',  # <-- Файл с cookies
+        'cookiefile': 'youtube.com_cookies.txt',  # <-- Имя файла, как в репозитории
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=False)
@@ -97,6 +97,8 @@ async def on_ready():
             return
 
         if not client.voice_clients:
+            # self_mute=True — выключен микрофон
+            # self_deaf=True — выключены наушники
             voice = await channel.connect(self_mute=True, self_deaf=True)
             print(f"Успешно подключен к {channel.name} (в муте и с выключенными наушниками)")
             play_music(voice, current_track)
@@ -107,6 +109,7 @@ async def on_ready():
 
 @client.event
 async def on_message(message):
+    # Игнорируем сообщения от самого себя
     if message.author.id == client.user.id:
         return
 
@@ -121,6 +124,7 @@ async def on_message(message):
 
     content = message.content.strip().lower()
 
+    # Команда !play <номер>
     if content.startswith("!play"):
         parts = content.split()
         if len(parts) < 2:
@@ -134,6 +138,7 @@ async def on_message(message):
         play_music(voice, track_key)
         await message.channel.send(f"Включаю трек {track_key} (YouTube).")
 
+    # Команда !stop
     elif content == "!stop":
         if voice.is_playing():
             voice.stop()
@@ -141,12 +146,14 @@ async def on_message(message):
         else:
             await message.channel.send("Музыка и так не играет.")
 
+    # Команда !list
     elif content == "!list":
         track_list = "\n".join([f"`{k}` — {v}" for k, v in TRACKS.items()])
         await message.channel.send(f"Доступные треки:\n{track_list}")
 
 @client.event
 async def on_voice_state_update(member, before, after):
+    # Если нас случайно отключили, пытаемся переподключиться
     if member.id == client.user.id:
         if before.channel and not after.channel:
             print("Соединение потеряно. Переподключение через 5 секунд...")
@@ -160,4 +167,5 @@ async def on_voice_state_update(member, before, after):
             except Exception as e:
                 print(f"Не удалось переподключиться: {e}")
 
+# Запускаем Discord-клиента
 client.run(TOKEN)
