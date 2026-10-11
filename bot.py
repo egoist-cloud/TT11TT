@@ -16,7 +16,7 @@ sys.stderr.reconfigure(line_buffering=True)
 # ЧТЕНИЕ ПЕРЕМЕННЫХ
 # ====================================================
 TOKEN_MAIN = os.getenv("DISCORD_TOKEN_1")
-MAIN_CHANNEL_ID = int(os.getenv("VOICE_CHANNEL_ID", "1558455255791050803"))
+MAIN_CHANNEL_ID = int(os.getenv("VOICE_CHANNEL_ID", "1241013075151425650"))
 
 TOKEN_EGOIST = os.getenv("DISCORD_TOKEN_2")
 USER_ID_EGOIST = int(os.getenv("USER_ID_1"))
@@ -25,6 +25,9 @@ TOKEN_EGORIK = os.getenv("DISCORD_TOKEN_3")
 USER_ID_EGORIK = int(os.getenv("USER_ID_2"))
 
 GUILD_ID = int(os.getenv("GUILD_ID"))
+
+# ID основного бота (asiris.cs2_02506) — тот, кому пишем команды
+MAIN_BOT_USER_ID = int(os.getenv("MAIN_BOT_USER_ID", "1241012523952508978"))
 
 print("=" * 50, flush=True)
 print("ЗАГРУЗКА ПЕРЕМЕННЫХ:", flush=True)
@@ -35,6 +38,7 @@ print(f"  USER_ID_EGOIST: {USER_ID_EGOIST}", flush=True)
 print(f"  USER_ID_EGORIK: {USER_ID_EGORIK}", flush=True)
 print(f"  GUILD_ID: {GUILD_ID}", flush=True)
 print(f"  MAIN_CHANNEL_ID: {MAIN_CHANNEL_ID}", flush=True)
+print(f"  MAIN_BOT_USER_ID: {MAIN_BOT_USER_ID}", flush=True)
 print("=" * 50, flush=True)
 
 # ====================================================
@@ -59,10 +63,13 @@ def run_web_server():
 threading.Thread(target=run_web_server, daemon=True).start()
 
 # ====================================================
-# АККАУНТ №1: 24/7
+# АККАУНТ №1: 24/7 + ПРИНИМАЕТ КОМАНДЫ
 # ====================================================
 main_client = discord.Client()
 main_reconnecting = False
+
+watcher_egoist = None
+watcher_egorik = None
 
 async def ensure_main_connected():
     global main_reconnecting
@@ -122,8 +129,55 @@ async def on_voice_state_update(member, before, after):
         await asyncio.sleep(5)
         await ensure_main_connected()
 
+@main_client.event
+async def on_message(message):
+    # Игнорируем свои сообщения
+    if message.author.id == main_client.user.id:
+        return
+
+    # Принимаем команды только в личке
+    if not isinstance(message.channel, discord.DMChannel):
+        return
+
+    # Принимаем команды только от egoist или egorik
+    if message.author.id not in (USER_ID_EGOIST, USER_ID_EGORIK):
+        return
+
+    content = message.content.strip().lower()
+    parts = content.split()
+
+    if len(parts) < 2:
+        await message.channel.send(
+            "Использование: `!on egoist` / `!off egoist` / `!on egorik` / `!off egorik`"
+        )
+        return
+
+    command = parts[0]
+    target = parts[1]
+
+    if target == "egoist" and watcher_egoist:
+        if command == "!on":
+            watcher_egoist.manual_mode = True
+            await watcher_egoist.connect(MAIN_CHANNEL_ID)
+            await message.channel.send("✅ Бот `egoist` включён (24/7).")
+        elif command == "!off":
+            watcher_egoist.manual_mode = False
+            await watcher_egoist.disconnect()
+            await message.channel.send("⛔ Бот `egoist` выключен.")
+    elif target == "egorik" and watcher_egorik:
+        if command == "!on":
+            watcher_egorik.manual_mode = True
+            await watcher_egorik.connect(MAIN_CHANNEL_ID)
+            await message.channel.send("✅ Бот `egorik` включён (24/7).")
+        elif command == "!off":
+            watcher_egorik.manual_mode = False
+            await watcher_egorik.disconnect()
+            await message.channel.send("⛔ Бот `egorik` выключен.")
+    else:
+        await message.channel.send("Укажите `egoist` или `egorik`.")
+
 # ====================================================
-# ДЕЖУРНЫЙ АККАУНТ (команды в личке и в чате канала)
+# ДЕЖУРНЫЙ АККАУНТ
 # ====================================================
 class Watcher:
     def __init__(self, token, user_id, name):
@@ -139,63 +193,6 @@ class Watcher:
         @self.client.event
         async def on_ready():
             print(f"[{self.name}] Авторизован как {self.client.user}", flush=True)
-
-        @self.client.event
-        async def on_message(message):
-            # Игнорируем свои сообщения
-            if message.author.id == self.client.user.id:
-                return
-
-            # Команды принимаем только от владельца
-            if message.author.id != self.user_id:
-                return
-
-            content = message.content.strip().lower()
-
-            # Проверяем, откуда пришло сообщение
-            is_dm = isinstance(message.channel, discord.DMChannel)
-            voice = self.client.voice_clients[0] if self.client.voice_clients else None
-            is_in_voice_chat = (
-                voice and voice.channel and message.channel.id == voice.channel.id
-            )
-
-            # Реагируем только на личку или текстовый чат канала, где сидит бот
-            if not (is_dm or is_in_voice_chat):
-                return
-
-            # !on — включить режим 24/7
-            if content == "!on":
-                print(f"[{self.name}] Команда !on. Подключаюсь.", flush=True)
-                self.manual_mode = True
-                await self.connect(MAIN_CHANNEL_ID)
-                try:
-                    await message.channel.send("✅ Бот включён. Сижу в канале 24/7.")
-                except Exception:
-                    pass
-
-            # !off — выключить
-            elif content == "!off":
-                print(f"[{self.name}] Команда !off. Отключаюсь.", flush=True)
-                self.manual_mode = False
-                await self.disconnect()
-                try:
-                    await message.channel.send("⛔ Бот выключен.")
-                except Exception:
-                    pass
-
-            # !status — проверить состояние
-            elif content == "!status":
-                state = "включён (24/7)" if self.manual_mode else "авто-режим"
-                in_channel = bool(
-                    self.client.voice_clients
-                    and self.client.voice_clients[0].is_connected()
-                )
-                try:
-                    await message.channel.send(
-                        f"Режим: {state}\nВ канале: {'да' if in_channel else 'нет'}"
-                    )
-                except Exception:
-                    pass
 
         @self.client.event
         async def on_presence_update(before, after):
@@ -274,6 +271,8 @@ class Watcher:
 # ЗАПУСК
 # ====================================================
 async def main():
+    global watcher_egoist, watcher_egorik
+
     print("=" * 50, flush=True)
     print("ЗАПУСК БОТОВ...", flush=True)
     print("=" * 50, flush=True)
@@ -288,7 +287,7 @@ async def main():
             watcher_egorik.start(),
         )
     except Exception as e:
-        print(f"КРИТИЧЕСКАЯ ОШИБКА В GATHER: {e}", flush=True)
+        print(f"КРИТИЧЕСКАЯ ОШИБКА: {e}", flush=True)
         traceback.print_exc()
 
 if __name__ == "__main__":
