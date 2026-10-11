@@ -36,7 +36,7 @@ if not GUILD_ID:
     raise ValueError("Не задан GUILD_ID")
 
 # ====================================================
-# ВЕБ-СЕРВЕР ДЛЯ RENDER
+# ВЕБ-СЕРВЕР
 # ====================================================
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -57,7 +57,7 @@ def run_web_server():
 threading.Thread(target=run_web_server, daemon=True).start()
 
 # ====================================================
-# АККАУНТ №1: СИДИТ 24/7
+# АККАУНТ №1: 24/7
 # ====================================================
 main_client = discord.Client()
 main_reconnecting = False
@@ -80,8 +80,16 @@ async def ensure_main_connected():
             except Exception:
                 pass
             await asyncio.sleep(2)
-        await channel.connect(self_mute=True, self_deaf=True)
-        print(f"[MAIN] Подключен к {channel.name} (в полном муте)")
+        # 3 попытки подключения
+        for attempt in range(3):
+            try:
+                await channel.connect(self_mute=True, self_deaf=True, timeout=30.0)
+                print(f"[MAIN] Подключен к {channel.name} (в полном муте)")
+                return
+            except Exception as e:
+                print(f"[MAIN] Попытка {attempt + 1} не удалась: {e}")
+                await asyncio.sleep(10)
+        print("[MAIN] Не удалось подключиться после 3 попыток.")
     except Exception as e:
         print(f"[MAIN] Ошибка подключения: {e}")
         traceback.print_exc()
@@ -139,7 +147,6 @@ class Watcher:
             if after.channel and after.channel.guild.id != GUILD_ID:
                 return
 
-            # Человек ВЫШЕЛ
             if before.channel and not after.channel:
                 print(f"[{self.name}] {member} вышел. Жду 30 секунд...")
                 if self.pending_join and not self.pending_join.done():
@@ -147,18 +154,14 @@ class Watcher:
                 self.pending_join = asyncio.create_task(
                     self.delayed_join(before.channel.id)
                 )
-
-            # Человек ЗАШЁЛ
             elif not before.channel and after.channel:
                 print(f"[{self.name}] {member} зашёл. Отменяю таймер и выхожу.")
                 if self.pending_join and not self.pending_join.done():
                     self.pending_join.cancel()
                     self.pending_join = None
                 await self.disconnect()
-
-            # Человек ПЕРЕШЁЛ
             elif before.channel and after.channel and before.channel != after.channel:
-                print(f"[{self.name}] {member} перешёл в {after.channel.name}. Отменяю таймер.")
+                print(f"[{self.name}] {member} перешёл. Отменяю таймер.")
                 if self.pending_join and not self.pending_join.done():
                     self.pending_join.cancel()
                     self.pending_join = None
@@ -194,7 +197,7 @@ class Watcher:
                 except Exception:
                     pass
                 await asyncio.sleep(2)
-            await channel.connect(self_mute=True, self_deaf=True)
+            await channel.connect(self_mute=True, self_deaf=True, timeout=30.0)
             print(f"[{self.name}] Подключен к {channel.name} (в полном муте)")
         except Exception as e:
             print(f"[{self.name}] Ошибка: {e}")
