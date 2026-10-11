@@ -16,7 +16,6 @@ sys.stderr.reconfigure(line_buffering=True)
 # ЧТЕНИЕ ПЕРЕМЕННЫХ
 # ====================================================
 TOKEN_MAIN = os.getenv("DISCORD_TOKEN_1")
-# ID голосового канала TALENT (НЕ лички!)
 MAIN_CHANNEL_ID = int(os.getenv("VOICE_CHANNEL_ID", "0"))
 
 TOKEN_EGOIST = os.getenv("DISCORD_TOKEN_2")
@@ -27,7 +26,6 @@ USER_ID_EGORIK = int(os.getenv("USER_ID_2"))
 
 GUILD_ID = int(os.getenv("GUILD_ID"))
 
-# ID основного бота (commback / asiris.cs2_02506)
 MAIN_BOT_USER_ID = int(os.getenv("MAIN_BOT_USER_ID", "1241012523952508978"))
 
 print("=" * 50, flush=True)
@@ -46,7 +44,7 @@ if not MAIN_CHANNEL_ID:
     raise ValueError("Не задан VOICE_CHANNEL_ID (ID голосового канала TALENT)")
 
 # ====================================================
-# ВЕБ-СЕРВЕР
+# ВЕБ-СЕРВЕР ДЛЯ RENDER
 # ====================================================
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -67,7 +65,7 @@ def run_web_server():
 threading.Thread(target=run_web_server, daemon=True).start()
 
 # ====================================================
-# АККАУНТ №1 (commback): 24/7 + ПРИНИМАЕТ КОМАНДЫ
+# АККАУНТ №1 (commback): СИДИТ 24/7, РАЗМУЧЕН
 # ====================================================
 main_client = discord.Client()
 main_reconnecting = False
@@ -97,8 +95,9 @@ async def ensure_main_connected():
             await asyncio.sleep(2)
         for attempt in range(3):
             try:
-                await channel.connect(self_mute=True, self_deaf=True, timeout=30.0)
-                print(f"[MAIN] Подключен к {channel.name} (в полном муте)", flush=True)
+                # РАЗМУЧЕН: без self_mute и self_deaf
+                await channel.connect(timeout=30.0)
+                print(f"[MAIN] Подключен к {channel.name} (РАЗМУЧЕН)", flush=True)
                 return
             except Exception as e:
                 print(f"[MAIN] Попытка {attempt + 1}: {type(e).__name__}: {e}", flush=True)
@@ -141,7 +140,6 @@ async def on_message(message):
     if not isinstance(message.channel, discord.DMChannel):
         return
     if message.author.id not in (USER_ID_EGOIST, USER_ID_EGORIK):
-        print(f"[MAIN] Команда от неизвестного пользователя {message.author.id} проигнорирована.", flush=True)
         return
 
     content = message.content.strip().lower()
@@ -158,24 +156,24 @@ async def on_message(message):
 
     if target == "egoist" and watcher_egoist:
         if command == "!on":
-            print(f"[MAIN] Команда: !on egoist", flush=True)
+            print("[MAIN] Команда: !on egoist", flush=True)
             watcher_egoist.manual_mode = True
             await watcher_egoist.connect(MAIN_CHANNEL_ID)
             await message.channel.send("✅ Бот `egoist` включён (24/7).")
         elif command == "!off":
-            print(f"[MAIN] Команда: !off egoist", flush=True)
+            print("[MAIN] Команда: !off egoist", flush=True)
             watcher_egoist.manual_mode = False
             await watcher_egoist.disconnect()
             await message.channel.send("⛔ Бот `egoist` выключен.")
 
     elif target == "egorik" and watcher_egorik:
         if command == "!on":
-            print(f"[MAIN] Команда: !on egorik", flush=True)
+            print("[MAIN] Команда: !on egorik", flush=True)
             watcher_egorik.manual_mode = True
             await watcher_egorik.connect(MAIN_CHANNEL_ID)
             await message.channel.send("✅ Бот `egorik` включён (24/7).")
         elif command == "!off":
-            print(f"[MAIN] Команда: !off egorik", flush=True)
+            print("[MAIN] Команда: !off egorik", flush=True)
             watcher_egorik.manual_mode = False
             await watcher_egorik.disconnect()
             await message.channel.send("⛔ Бот `egorik` выключен.")
@@ -184,7 +182,7 @@ async def on_message(message):
         await message.channel.send("Укажите `egoist` или `egorik`.")
 
 # ====================================================
-# ДЕЖУРНЫЙ АККАУНТ
+# ДЕЖУРНЫЙ АККАУНТ (В МУТЕ)
 # ====================================================
 class Watcher:
     def __init__(self, token, user_id, name):
@@ -251,8 +249,9 @@ class Watcher:
                 except Exception:
                     pass
                 await asyncio.sleep(2)
+            # В МУТЕ
             await channel.connect(self_mute=True, self_deaf=True, timeout=30.0)
-            print(f"[{self.name}] Подключен к {channel.name} (в полном муте)", flush=True)
+            print(f"[{self.name}] Подключен к {channel.name} (в муте)", flush=True)
         except Exception as e:
             print(f"[{self.name}] Ошибка: {type(e).__name__}: {e}", flush=True)
             traceback.print_exc()
