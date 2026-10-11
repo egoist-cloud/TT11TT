@@ -3,6 +3,7 @@ import asyncio
 import discord
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
+import yt_dlp  # <-- Новая библиотека
 
 # --- Чтение переменных окружения ---
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -13,15 +14,15 @@ if not TOKEN or not VOICE_CHANNEL_ID:
 
 VOICE_CHANNEL_ID = int(VOICE_CHANNEL_ID)
 
-# --- Список доступных треков ---
+# --- Список доступных треков (ссылки на YouTube) ---
 TRACKS = {
-    "1": "music.mp3",
-    # "2": "music2.mp3",  # добавьте второй файл в репозиторий и раскомментируйте
+    "1": "https://www.youtube.com/watch?v=rB11e52E9LM",  # Ваша музыка
+    # "2": "https://www.youtube.com/watch?v=другая_ссылка",
 }
 
 current_track = "1"
 
-# --- Веб-сервер для Render (Health Check) ---
+# --- Веб-сервер для Render ---
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -43,26 +44,46 @@ threading.Thread(target=run_web_server, daemon=True).start()
 
 client = discord.Client()
 
+def get_audio_source(url):
+    """Извлекает прямой аудио-URL из YouTube-ссылки с помощью yt-dlp."""
+    ydl_opts = {
+        'format': 'bestaudio/best',
+        'quiet': True,
+        'no_warnings': True,
+    }
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(url, download=False)
+        return info['url']
+
 def play_music(voice_client, track_key):
-    """Запускает трек и ставит его на повтор."""
+    """Запускает трек с YouTube и ставит его на повтор."""
     global current_track
     current_track = track_key
 
     if not voice_client or not voice_client.is_connected():
         return
     try:
-        filename = TRACKS.get(track_key)
-        if not filename:
+        url = TRACKS.get(track_key)
+        if not url:
             print(f"Трек {track_key} не найден.")
             return
-        source = discord.FFmpegPCMAudio(filename)
+
+        # Получаем прямой URL аудиопотока
+        audio_url = get_audio_source(url)
+
+        # Опции FFmpeg для стабильного стриминга
+        ffmpeg_options = {
+            'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
+            'options': '-vn'
+        }
+
+        source = discord.FFmpegPCMAudio(audio_url, **ffmpeg_options)
         voice_client.play(source, after=lambda e: play_music(voice_client, current_track))
-        print(f"Играет трек {track_key}: {filename}")
+        print(f"Играет трек {track_key} (YouTube)")
     except Exception as e:
         print(f"Ошибка при воспроизведении: {e}")
 
 def get_voice_client():
-    """Возвращает текущий голосовой клиент, если он есть."""
     if client.voice_clients:
         return client.voice_clients[0]
     return None
@@ -79,8 +100,6 @@ async def on_ready():
             return
 
         if not client.voice_clients:
-            # self_mute=True — выключен микрофон
-            # self_deaf=True — выключены наушники
             voice = await channel.connect(self_mute=True, self_deaf=True)
             print(f"Успешно подключен к {channel.name} (в муте и с выключенными наушниками)")
             play_music(voice, current_track)
@@ -91,7 +110,6 @@ async def on_ready():
 
 @client.event
 async def on_message(message):
-    # Игнорируем сообщения от самого себя
     if message.author.id == client.user.id:
         return
 
@@ -99,15 +117,13 @@ async def on_message(message):
     if not voice or not voice.channel:
         return
 
-    # Реагируем только на текстовый чат того же канала, где сидит бот,
-    # либо на личные сообщения
+    # Реагируем только на текстовый чат того же канала, где сидит бот, или на личку
     if message.channel.id != voice.channel.id:
         if not isinstance(message.channel, discord.DMChannel):
             return
 
     content = message.content.strip().lower()
 
-    # Команда !play <номер>
     if content.startswith("!play"):
         parts = content.split()
         if len(parts) < 2:
@@ -119,9 +135,8 @@ async def on_message(message):
             return
         voice.stop()
         play_music(voice, track_key)
-        await message.channel.send(f"Включаю трек {track_key}.")
+        await message.channel.send(f"Включаю трек {track_key} (YouTube).")
 
-    # Команда !stop
     elif content == "!stop":
         if voice.is_playing():
             voice.stop()
@@ -129,14 +144,12 @@ async def on_message(message):
         else:
             await message.channel.send("Музыка и так не играет.")
 
-    # Команда !list
     elif content == "!list":
         track_list = "\n".join([f"`{k}` — {v}" for k, v in TRACKS.items()])
         await message.channel.send(f"Доступные треки:\n{track_list}")
 
 @client.event
 async def on_voice_state_update(member, before, after):
-    # Если нас случайно отключили, пытаемся переподключиться
     if member.id == client.user.id:
         if before.channel and not after.channel:
             print("Соединение потеряно. Переподключение через 5 секунд...")
@@ -150,5 +163,4 @@ async def on_voice_state_update(member, before, after):
             except Exception as e:
                 print(f"Не удалось переподключиться: {e}")
 
-# Запускаем Discord-клиента
 client.run(TOKEN)
