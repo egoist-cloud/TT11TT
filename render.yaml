@@ -1,9 +1,7 @@
 services:
-  - type: worker
-    name: discord-voice-afk
-    runtime: python
-    buildCommand: pip install -r requirements.txt
-    startCommand: python bot.py
+  - type: web
+    name: TT11TT
+    runtime: docker
     plan: free
     envVars:
       - key: DISCORD_TOKEN
