@@ -29,6 +29,7 @@ USER_ID_EGORIK = int(os.getenv("USER_ID_2"))
 
 GUILD_ID = int(os.getenv("GUILD_ID"))
 MAIN_BOT_USER_ID = int(os.getenv("MAIN_BOT_USER_ID", "1241012523952508978"))
+USER_ID_THIRD = int(os.getenv("USER_ID_5", "0"))
 
 print("=" * 50, flush=True)
 print("ЗАГРУЗКА ПЕРЕМЕННЫХ:", flush=True)
@@ -39,6 +40,7 @@ print(f"  TOKEN_EGOIST: {'есть' if TOKEN_EGOIST else 'НЕТ'}", flush=True)
 print(f"  TOKEN_EGORIK: {'есть' if TOKEN_EGORIK else 'НЕТ'}", flush=True)
 print(f"  USER_ID_EGOIST: {USER_ID_EGOIST}", flush=True)
 print(f"  USER_ID_EGORIK: {USER_ID_EGORIK}", flush=True)
+print(f"  USER_ID_THIRD: {USER_ID_THIRD}", flush=True)
 print(f"  GUILD_ID: {GUILD_ID}", flush=True)
 print(f"  MAIN_CHANNEL_ID: {MAIN_CHANNEL_ID}", flush=True)
 print(f"  MAIN_BOT_USER_ID: {MAIN_BOT_USER_ID}", flush=True)
@@ -319,7 +321,6 @@ class Watcher:
         @self.client.event
         async def on_ready():
             print(f"[{self.name}] Авторизован как {self.client.user}", flush=True)
-            # Запускаем watchdog только если manual_mode уже True (не при старте)
             self.client.loop.create_task(self.watchdog())
 
         @self.client.event
@@ -338,13 +339,10 @@ class Watcher:
 
         @self.client.event
         async def on_voice_state_update(member, before, after):
-            # Если бот выключен — игнорируем
             if not self.manual_mode:
                 return
-            # Следим только за собой
             if member.id != self.client.user.id:
                 return
-            # Если бота кикнули или он вышел
             if before.channel and not after.channel:
                 print(f"[{self.name}] Кикнули/вышел. Переподключаюсь через 5 сек...", flush=True)
                 await asyncio.sleep(5)
@@ -352,7 +350,6 @@ class Watcher:
                     await self.connect(MAIN_CHANNEL_ID)
 
     async def watchdog(self):
-        """Проверяет, что бот в канале, пока manual_mode=True."""
         while True:
             await asyncio.sleep(30)
             if not self.manual_mode:
@@ -377,7 +374,7 @@ class Watcher:
                 except Exception:
                     pass
                 await asyncio.sleep(2)
-            await channel.connect(timeout=30.0)
+            await channel.connect(timeout=30.0)  # БЕЗ МУТА
             print(f"[{self.name}] Подключен к {channel.name} (без мута)", flush=True)
         except Exception as e:
             print(f"[{self.name}] Ошибка: {type(e).__name__}: {e}", flush=True)
