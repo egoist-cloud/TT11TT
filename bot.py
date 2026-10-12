@@ -1,4 +1,4 @@
-import os
+\import os
 import sys
 import asyncio
 import discord
@@ -46,7 +46,7 @@ if not MAIN_CHANNEL_ID:
     raise ValueError("Не задан VOICE_CHANNEL_ID (ID голосового канала TALENT)")
 
 # ====================================================
-# ВЕБ-СЕРВЕР
+# ВЕБ-СЕРВЕР ДЛЯ RENDER
 # ====================================================
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -85,6 +85,7 @@ async def ensure_main_connected():
         if not channel:
             print(f"[MAIN] Канал {MAIN_CHANNEL_ID} не найден.", flush=True)
             return
+        # Если уже в правильном канале — ничего не делаем
         if (main_client.voice_clients
                 and main_client.voice_clients[0].is_connected()
                 and main_client.voice_clients[0].channel.id == MAIN_CHANNEL_ID):
@@ -97,7 +98,7 @@ async def ensure_main_connected():
             await asyncio.sleep(2)
         for attempt in range(3):
             try:
-                await channel.connect(timeout=30.0)
+                await channel.connect(timeout=30.0)  # РАЗМУЧЕН
                 print(f"[MAIN] Подключен к {channel.name} (РАЗМУЧЕН)", flush=True)
                 return
             except Exception as e:
@@ -112,10 +113,11 @@ async def ensure_main_connected():
 async def main_watchdog():
     while True:
         await asyncio.sleep(30)
+        # Если бот не в канале или не в том канале — переподключаем
         if (not main_client.voice_clients
                 or not main_client.voice_clients[0].is_connected()
                 or main_client.voice_clients[0].channel.id != MAIN_CHANNEL_ID):
-            print("[MAIN] Бот не в канале. Переподключаюсь...", flush=True)
+            print("[MAIN] Бот не в нужном канале. Переподключаюсь...", flush=True)
             await ensure_main_connected()
 
 @main_client.event
@@ -128,8 +130,9 @@ async def on_ready():
 async def on_voice_state_update(member, before, after):
     if member.id != main_client.user.id:
         return
+    # Кикнули или вышел
     if before.channel and not after.channel:
-        print("[MAIN] Кикнули. Переподключаюсь...", flush=True)
+        print("[MAIN] Кикнули. Переподключаюсь через 5 секунд...", flush=True)
         await asyncio.sleep(5)
         await ensure_main_connected()
 
@@ -190,7 +193,9 @@ async def ensure_second_connected():
     try:
         channel = second_client.get_channel(MAIN_CHANNEL_ID)
         if not channel:
+            print(f"[SECOND] Канал {MAIN_CHANNEL_ID} не найден.", flush=True)
             return
+        # Если уже в правильном канале — ничего не делаем
         if (second_client.voice_clients
                 and second_client.voice_clients[0].is_connected()
                 and second_client.voice_clients[0].channel.id == MAIN_CHANNEL_ID):
@@ -203,7 +208,7 @@ async def ensure_second_connected():
             await asyncio.sleep(2)
         for attempt in range(3):
             try:
-                await channel.connect(timeout=30.0)
+                await channel.connect(timeout=30.0)  # РАЗМУЧЕН
                 print(f"[SECOND] Подключен к {channel.name} (РАЗМУЧЕН)", flush=True)
                 return
             except Exception as e:
@@ -220,7 +225,7 @@ async def second_watchdog():
         if (not second_client.voice_clients
                 or not second_client.voice_clients[0].is_connected()
                 or second_client.voice_clients[0].channel.id != MAIN_CHANNEL_ID):
-            print("[SECOND] Бот не в канале. Переподключаюсь...", flush=True)
+            print("[SECOND] Бот не в нужном канале. Переподключаюсь...", flush=True)
             await ensure_second_connected()
 
 @second_client.event
@@ -234,7 +239,7 @@ async def on_voice_state_update(member, before, after):
     if member.id != second_client.user.id:
         return
     if before.channel and not after.channel:
-        print("[SECOND] Кикнули. Переподключаюсь...", flush=True)
+        print("[SECOND] Кикнули. Переподключаюсь через 5 секунд...", flush=True)
         await asyncio.sleep(5)
         await ensure_second_connected()
 
@@ -273,13 +278,10 @@ class Watcher:
 
         @self.client.event
         async def on_voice_state_update(member, before, after):
-            # Если бот выключен — игнорируем
             if not self.manual_mode:
                 return
-            # Следим только за собой
             if member.id != self.client.user.id:
                 return
-            # Если бота кикнули или он вышел
             if before.channel and not after.channel:
                 print(f"[{self.name}] Кикнули/вышел. Переподключаюсь через 5 сек...", flush=True)
                 await asyncio.sleep(5)
@@ -287,7 +289,6 @@ class Watcher:
                     await self.connect(MAIN_CHANNEL_ID)
 
     async def watchdog(self):
-        """Проверяет, что бот в канале, пока manual_mode=True."""
         while True:
             await asyncio.sleep(30)
             if not self.manual_mode:
@@ -305,6 +306,11 @@ class Watcher:
         try:
             channel = self.client.get_channel(channel_id)
             if not channel:
+                return
+            # Если уже в правильном канале — ничего не делаем
+            if (self.client.voice_clients
+                    and self.client.voice_clients[0].is_connected()
+                    and self.client.voice_clients[0].channel.id == channel_id):
                 return
             if self.client.voice_clients:
                 try:
