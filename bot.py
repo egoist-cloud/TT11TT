@@ -17,6 +17,7 @@ sys.stderr.reconfigure(line_buffering=True)
 # ====================================================
 TOKEN_MAIN = os.getenv("DISCORD_TOKEN_1")
 TOKEN_SECOND = os.getenv("DISCORD_TOKEN_4")
+TOKEN_THIRD = os.getenv("DISCORD_TOKEN_5")
 
 MAIN_CHANNEL_ID = int(os.getenv("VOICE_CHANNEL_ID", "0"))
 
@@ -33,6 +34,7 @@ print("=" * 50, flush=True)
 print("ЗАГРУЗКА ПЕРЕМЕННЫХ:", flush=True)
 print(f"  TOKEN_MAIN: {'есть' if TOKEN_MAIN else 'НЕТ'}", flush=True)
 print(f"  TOKEN_SECOND: {'есть' if TOKEN_SECOND else 'НЕТ'}", flush=True)
+print(f"  TOKEN_THIRD: {'есть' if TOKEN_THIRD else 'НЕТ'}", flush=True)
 print(f"  TOKEN_EGOIST: {'есть' if TOKEN_EGOIST else 'НЕТ'}", flush=True)
 print(f"  TOKEN_EGORIK: {'есть' if TOKEN_EGORIK else 'НЕТ'}", flush=True)
 print(f"  USER_ID_EGOIST: {USER_ID_EGOIST}", flush=True)
@@ -97,7 +99,7 @@ async def ensure_main_connected():
             await asyncio.sleep(2)
         for attempt in range(3):
             try:
-                await channel.connect(timeout=30.0)  # РАЗМУЧЕН
+                await channel.connect(timeout=30.0)
                 print(f"[MAIN] Подключен к {channel.name} (РАЗМУЧЕН)", flush=True)
                 return
             except Exception as e:
@@ -158,7 +160,7 @@ async def on_message(message):
         if command == "!on":
             watcher_egoist.manual_mode = True
             await watcher_egoist.connect(MAIN_CHANNEL_ID)
-            await message.channel.send("✅ Бот `egoist` включён (без мута).")
+            await message.channel.send("✅ Бот `egoist` включён.")
         elif command == "!off":
             watcher_egoist.manual_mode = False
             await watcher_egoist.disconnect()
@@ -168,7 +170,7 @@ async def on_message(message):
         if command == "!on":
             watcher_egorik.manual_mode = True
             await watcher_egorik.connect(MAIN_CHANNEL_ID)
-            await message.channel.send("✅ Бот `egorik` включён (без мута).")
+            await message.channel.send("✅ Бот `egorik` включён.")
         elif command == "!off":
             watcher_egorik.manual_mode = False
             await watcher_egorik.disconnect()
@@ -177,7 +179,7 @@ async def on_message(message):
         await message.channel.send("Укажите `egoist` или `egorik`.")
 
 # ====================================================
-# ЧЕТВЁРТЫЙ БОТ: 24/7, РАЗМУЧЕН
+# ВТОРОЙ БОТ (DISCORD_TOKEN_4): 24/7, РАЗМУЧЕН
 # ====================================================
 second_client = discord.Client()
 second_reconnecting = False
@@ -190,7 +192,6 @@ async def ensure_second_connected():
     try:
         channel = second_client.get_channel(MAIN_CHANNEL_ID)
         if not channel:
-            print(f"[SECOND] Канал {MAIN_CHANNEL_ID} не найден.", flush=True)
             return
         if (second_client.voice_clients
                 and second_client.voice_clients[0].is_connected()
@@ -204,7 +205,7 @@ async def ensure_second_connected():
             await asyncio.sleep(2)
         for attempt in range(3):
             try:
-                await channel.connect(timeout=30.0)  # РАЗМУЧЕН
+                await channel.connect(timeout=30.0)
                 print(f"[SECOND] Подключен к {channel.name} (РАЗМУЧЕН)", flush=True)
                 return
             except Exception as e:
@@ -212,7 +213,6 @@ async def ensure_second_connected():
                 await asyncio.sleep(10)
     except Exception as e:
         print(f"[SECOND] Ошибка: {e}", flush=True)
-        traceback.print_exc()
     finally:
         second_reconnecting = False
 
@@ -241,7 +241,69 @@ async def on_voice_state_update(member, before, after):
         await ensure_second_connected()
 
 # ====================================================
-# ДЕЖУРНЫЙ АККАУНТ (БЕЗ МУТА)
+# ТРЕТИЙ БОТ (DISCORD_TOKEN_5): 24/7, РАЗМУЧЕН
+# ====================================================
+third_client = discord.Client()
+third_reconnecting = False
+
+async def ensure_third_connected():
+    global third_reconnecting
+    if third_reconnecting:
+        return
+    third_reconnecting = True
+    try:
+        channel = third_client.get_channel(MAIN_CHANNEL_ID)
+        if not channel:
+            return
+        if (third_client.voice_clients
+                and third_client.voice_clients[0].is_connected()
+                and third_client.voice_clients[0].channel.id == MAIN_CHANNEL_ID):
+            return
+        if third_client.voice_clients:
+            try:
+                await third_client.voice_clients[0].disconnect(force=True)
+            except Exception:
+                pass
+            await asyncio.sleep(2)
+        for attempt in range(3):
+            try:
+                await channel.connect(timeout=30.0)
+                print(f"[THIRD] Подключен к {channel.name} (РАЗМУЧЕН)", flush=True)
+                return
+            except Exception as e:
+                print(f"[THIRD] Попытка {attempt + 1}: {type(e).__name__}: {e}", flush=True)
+                await asyncio.sleep(10)
+    except Exception as e:
+        print(f"[THIRD] Ошибка: {e}", flush=True)
+    finally:
+        third_reconnecting = False
+
+async def third_watchdog():
+    while True:
+        await asyncio.sleep(30)
+        if (not third_client.voice_clients
+                or not third_client.voice_clients[0].is_connected()
+                or third_client.voice_clients[0].channel.id != MAIN_CHANNEL_ID):
+            print("[THIRD] Бот не в канале. Переподключаюсь...", flush=True)
+            await ensure_third_connected()
+
+@third_client.event
+async def on_ready():
+    print(f"[THIRD] Авторизован как {third_client.user}", flush=True)
+    await ensure_third_connected()
+    third_client.loop.create_task(third_watchdog())
+
+@third_client.event
+async def on_voice_state_update(member, before, after):
+    if member.id != third_client.user.id:
+        return
+    if before.channel and not after.channel:
+        print("[THIRD] Кикнули. Переподключаюсь...", flush=True)
+        await asyncio.sleep(5)
+        await ensure_third_connected()
+
+# ====================================================
+# ДЕЖУРНЫЙ АККАУНТ (БЕЗ МУТА, С ПЕРЕПОДКЛЮЧЕНИЕМ)
 # ====================================================
 class Watcher:
     def __init__(self, token, user_id, name):
@@ -257,6 +319,8 @@ class Watcher:
         @self.client.event
         async def on_ready():
             print(f"[{self.name}] Авторизован как {self.client.user}", flush=True)
+            # Запускаем watchdog только если manual_mode уже True (не при старте)
+            self.client.loop.create_task(self.watchdog())
 
         @self.client.event
         async def on_presence_update(before, after):
@@ -274,22 +338,30 @@ class Watcher:
 
         @self.client.event
         async def on_voice_state_update(member, before, after):
-            if self.manual_mode:
+            # Если бот выключен — игнорируем
+            if not self.manual_mode:
                 return
-            if member.id == self.client.user.id:
+            # Следим только за собой
+            if member.id != self.client.user.id:
                 return
-            if member.id != self.user_id:
-                return
-            if before.channel and before.channel.guild.id != GUILD_ID:
-                return
-            if after.channel and after.channel.guild.id != GUILD_ID:
-                return
+            # Если бота кикнули или он вышел
             if before.channel and not after.channel:
-                if member.status == discord.Status.offline:
-                    await asyncio.sleep(5)
-                    await self.connect(before.channel.id)
-            elif not before.channel and after.channel:
-                await self.disconnect()
+                print(f"[{self.name}] Кикнули/вышел. Переподключаюсь через 5 сек...", flush=True)
+                await asyncio.sleep(5)
+                if self.manual_mode:
+                    await self.connect(MAIN_CHANNEL_ID)
+
+    async def watchdog(self):
+        """Проверяет, что бот в канале, пока manual_mode=True."""
+        while True:
+            await asyncio.sleep(30)
+            if not self.manual_mode:
+                continue
+            if (not self.client.voice_clients
+                    or not self.client.voice_clients[0].is_connected()
+                    or self.client.voice_clients[0].channel.id != MAIN_CHANNEL_ID):
+                print(f"[{self.name}] Бот не в канале. Переподключаюсь...", flush=True)
+                await self.connect(MAIN_CHANNEL_ID)
 
     async def connect(self, channel_id):
         if self.is_reconnecting:
@@ -305,11 +377,10 @@ class Watcher:
                 except Exception:
                     pass
                 await asyncio.sleep(2)
-            await channel.connect(timeout=30.0)  # БЕЗ МУТА
+            await channel.connect(timeout=30.0)
             print(f"[{self.name}] Подключен к {channel.name} (без мута)", flush=True)
         except Exception as e:
             print(f"[{self.name}] Ошибка: {type(e).__name__}: {e}", flush=True)
-            traceback.print_exc()
         finally:
             self.is_reconnecting = False
 
@@ -326,7 +397,6 @@ class Watcher:
             await self.client.start(self.token)
         except Exception as e:
             print(f"[{self.name}] КРИТИЧЕСКАЯ ОШИБКА: {type(e).__name__}: {e}", flush=True)
-            traceback.print_exc()
 
 # ====================================================
 # ЗАПУСК
@@ -349,6 +419,8 @@ async def main():
 
     if TOKEN_SECOND:
         tasks.append(second_client.start(TOKEN_SECOND))
+    if TOKEN_THIRD:
+        tasks.append(third_client.start(TOKEN_THIRD))
 
     try:
         await asyncio.gather(*tasks)
