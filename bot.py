@@ -1,4 +1,4 @@
-\import os
+ import os
 import sys
 import asyncio
 import discord
@@ -85,7 +85,6 @@ async def ensure_main_connected():
         if not channel:
             print(f"[MAIN] Канал {MAIN_CHANNEL_ID} не найден.", flush=True)
             return
-        # Если уже в правильном канале — ничего не делаем
         if (main_client.voice_clients
                 and main_client.voice_clients[0].is_connected()
                 and main_client.voice_clients[0].channel.id == MAIN_CHANNEL_ID):
@@ -98,7 +97,7 @@ async def ensure_main_connected():
             await asyncio.sleep(2)
         for attempt in range(3):
             try:
-                await channel.connect(timeout=30.0)  # РАЗМУЧЕН
+                await channel.connect(timeout=30.0)
                 print(f"[MAIN] Подключен к {channel.name} (РАЗМУЧЕН)", flush=True)
                 return
             except Exception as e:
@@ -113,7 +112,6 @@ async def ensure_main_connected():
 async def main_watchdog():
     while True:
         await asyncio.sleep(30)
-        # Если бот не в канале или не в том канале — переподключаем
         if (not main_client.voice_clients
                 or not main_client.voice_clients[0].is_connected()
                 or main_client.voice_clients[0].channel.id != MAIN_CHANNEL_ID):
@@ -130,7 +128,6 @@ async def on_ready():
 async def on_voice_state_update(member, before, after):
     if member.id != main_client.user.id:
         return
-    # Кикнули или вышел
     if before.channel and not after.channel:
         print("[MAIN] Кикнули. Переподключаюсь через 5 секунд...", flush=True)
         await asyncio.sleep(5)
@@ -195,7 +192,6 @@ async def ensure_second_connected():
         if not channel:
             print(f"[SECOND] Канал {MAIN_CHANNEL_ID} не найден.", flush=True)
             return
-        # Если уже в правильном канале — ничего не делаем
         if (second_client.voice_clients
                 and second_client.voice_clients[0].is_connected()
                 and second_client.voice_clients[0].channel.id == MAIN_CHANNEL_ID):
@@ -208,7 +204,7 @@ async def ensure_second_connected():
             await asyncio.sleep(2)
         for attempt in range(3):
             try:
-                await channel.connect(timeout=30.0)  # РАЗМУЧЕН
+                await channel.connect(timeout=30.0)
                 print(f"[SECOND] Подключен к {channel.name} (РАЗМУЧЕН)", flush=True)
                 return
             except Exception as e:
@@ -307,7 +303,6 @@ class Watcher:
             channel = self.client.get_channel(channel_id)
             if not channel:
                 return
-            # Если уже в правильном канале — ничего не делаем
             if (self.client.voice_clients
                     and self.client.voice_clients[0].is_connected()
                     and self.client.voice_clients[0].channel.id == channel_id):
@@ -318,7 +313,7 @@ class Watcher:
                 except Exception:
                     pass
                 await asyncio.sleep(2)
-            await channel.connect(timeout=30.0)  # БЕЗ МУТА
+            await channel.connect(timeout=30.0)
             print(f"[{self.name}] Подключен к {channel.name} (без мута)", flush=True)
         except Exception as e:
             print(f"[{self.name}] Ошибка: {type(e).__name__}: {e}", flush=True)
