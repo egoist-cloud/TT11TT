@@ -1,5 +1,6 @@
 # ====================================================
 # TT11TT — Discord боты (main + second + 2 наблюдателя)
+# Без discord.ui (selfbot не поддерживает компоненты)
 # ====================================================
 import os
 import sys
@@ -499,7 +500,6 @@ async def on_ready():
             dead_socket_watchdog(main_client, "main", ensure_main_connected)
         )
         main_client.loop.create_task(daily_report_task())
-        main_client.add_view(PanelView())
     await send_dm_notification(USER_ID_EGOIST, "✅ Бот запущен и работает.")
     await send_telegram("✅ <b>TT11TT запущен</b> на Render.")
 
@@ -535,6 +535,7 @@ async def on_message(message):
 
     content = message.content.strip().lower()
 
+    # ─── Базовые ───
     if content == "!ping":
         await message.channel.send("pong 🏓")
         return
@@ -545,20 +546,24 @@ async def on_message(message):
         vc = main_client.voice_clients[0] if main_client.voice_clients else None
         in_channel = vc.channel.name if vc and vc.is_connected() else "нет"
         await message.channel.send(
-            f"**Статус ботов**\n"
-            f"Uptime: {h}ч {m}м {s}с\n"
-            f"MAIN в канале: {in_channel}\n"
-            f"Переподключений: main={reconnect_stats['main']}, "
-            f"second={reconnect_stats['second']}, "
-            f"egoist={reconnect_stats['egoist']}, "
-            f"egorik={reconnect_stats['egorik']}"
+            f"**📊 Статус системы**\n"
+            f"Uptime: `{h}ч {m}м {s}с`\n"
+            f"MAIN в канале: {in_channel}\n\n"
+            f"**Реконнекты:**\n"
+            f"`main   ` {reconnect_stats['main']}\n"
+            f"`second ` {reconnect_stats['second']}\n"
+            f"`egoist ` {reconnect_stats['egoist']}\n"
+            f"`egorik ` {reconnect_stats['egorik']}\n\n"
+            f"**📡 Пинг до Discord:**\n{get_latency_info()}"
         )
         return
 
-    if content in ("!panel", "!menu", "!control", "панель", "меню"):
-        await message.channel.send(embed=build_panel_embed(), view=PanelView())
+    # ─── Панель ───
+    if content in ("!panel", "!menu", "!control", "панель", "меню", "!help"):
+        await message.channel.send(build_panel_text())
         return
 
+    # ─── Лог ───
     if content == "!log":
         if not event_log:
             await message.channel.send("Событий пока нет.")
@@ -567,20 +572,68 @@ async def on_message(message):
                                         "\n".join(list(event_log)[-15:]) + "\n```")
         return
 
+    # ─── График ───
+    if content == "!chart":
+        lines = ["**📈 Реконнекты за 24ч**\n"]
+        for name in ["main", "second", "egoist", "egorik"]:
+            chart = build_reconnect_chart(name, 24)
+            lines.append(f"`{name:8}` {chart}  всего: {reconnect_stats[name]}")
+        await message.channel.send("\n".join(lines))
+        return
+
+    # ─── Кто в войсе ───
+    if content == "!who":
+        channel = main_client.get_channel(MAIN_CHANNEL_ID)
+        if not channel:
+            await message.channel.send("Канал не найден.")
+            return
+        members = [m.display_name for m in channel.members]
+        if not members:
+            await message.channel.send("Никого в войсе.")
+            return
+        await message.channel.send(
+            f"**🎙 В войсе ({len(members)}):**\n" +
+            "\n".join(f"• {m}" for m in members)
+        )
+        return
+
+    # ─── Telegram тест ───
     if content == "!tgtest":
         await send_telegram("🧪 Тестовое сообщение из TT11TT")
         await message.channel.send("Отправлено в Telegram (если настроен).")
         return
 
+    # ─── Массовые ───
+    if content == "!all on":
+        for w in (watcher_egoist, watcher_egorik):
+            if w:
+                w.disabled = False
+                w.manual_mode = True
+                await w.connect(MAIN_CHANNEL_ID)
+        await message.channel.send("✅ Все наблюдатели включены.")
+        return
+
+    if content == "!all off":
+        for w in (watcher_egoist, watcher_egorik):
+            if w:
+                w.manual_mode = False
+                await w.disconnect()
+        await message.channel.send("⛔ Все наблюдатели выключены (режим авто).")
+        return
+
+    # ─── Индивидуальные ───
     parts = content.split()
     if len(parts) < 2:
         await message.channel.send(
-            "Команды: `!panel`, `!ping`, `!status`, `!log`, `!tgtest`, "
-            "`!on egoist`, `!off egoist`, `!on egorik`, `!off egorik`"
+            "Команды: `!panel`, `!ping`, `!status`, `!log`, `!chart`, `!who`, `!tgtest`, "
+            "`!on egoist`, `!off egoist`, `!disable egoist`, "
+            "`!on egorik`, `!off egorik`, `!disable egorik`, "
+            "`!all on`, `!all off`"
         )
         return
 
     command, target = parts[0], parts[1]
+
     if target == "egoist" and watcher_egoist:
         if command == "!on":
             watcher_egoist.disabled = False
@@ -590,7 +643,13 @@ async def on_message(message):
         elif command == "!off":
             watcher_egoist.manual_mode = False
             await watcher_egoist.disconnect()
-            await message.channel.send("⛔ Бот `egoist` выключен.")
+            await message.channel.send("⛔ Бот `egoist` выключен (режим авто).")
+        elif command == "!disable":
+            watcher_egoist.disabled = True
+            watcher_egoist.manual_mode = False
+            await watcher_egoist.disconnect()
+            await message.channel.send("🔴 Бот `egoist` отключён полностью.")
+
     elif target == "egorik" and watcher_egorik:
         if command == "!on":
             watcher_egorik.disabled = False
@@ -600,7 +659,12 @@ async def on_message(message):
         elif command == "!off":
             watcher_egorik.manual_mode = False
             await watcher_egorik.disconnect()
-            await message.channel.send("⛔ Бот `egorik` выключен.")
+            await message.channel.send("⛔ Бот `egorik` выключен (режим авто).")
+        elif command == "!disable":
+            watcher_egorik.disabled = True
+            watcher_egorik.manual_mode = False
+            await watcher_egorik.disconnect()
+            await message.channel.send("🔴 Бот `egorik` отключён полностью.")
     else:
         await message.channel.send("Укажите `egoist` или `egorik`.")
 
@@ -685,201 +749,9 @@ async def on_voice_state_update(member, before, after):
 
 
 # ====================================================
-# ПАНЕЛЬ УПРАВЛЕНИЯ
+# ТЕКСТОВАЯ ПАНЕЛЬ
 # ====================================================
-class ConfirmView(discord.ui.View):
-    def __init__(self, action_callback, action_name: str):
-        super().__init__(timeout=30)
-        self.action_callback = action_callback
-        self.action_name = action_name
-
-    @discord.ui.button(label="✅ Да, подтверждаю", style=discord.ButtonStyle.danger)
-    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer()
-        try:
-            await self.action_callback()
-            await interaction.edit_original_response(
-                content=f"✅ Действие «{self.action_name}» выполнено.", view=None
-            )
-        except Exception as e:
-            await interaction.edit_original_response(
-                content=f"❌ Ошибка: {e}", view=None
-            )
-        self.stop()
-
-    @discord.ui.button(label="❌ Отмена", style=discord.ButtonStyle.secondary)
-    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.edit_message(
-            content="❌ Действие отменено.", view=None
-        )
-        self.stop()
-
-
-async def confirm_action(interaction: discord.Interaction, action_name: str, callback):
-    view = ConfirmView(callback, action_name)
-    await interaction.response.send_message(
-        f"⚠️ **Подтверждение**\n"
-        f"Вы собираетесь выполнить: **{action_name}**\n"
-        f"Это критичное действие.\n\n"
-        f"Подтвердите в течение 30 секунд.",
-        view=view,
-        ephemeral=True,
-    )
-
-
-class ActionSelect(discord.ui.Select):
-    def __init__(self):
-        options = [
-            discord.SelectOption(label="Включить egoist", value="egoist_on",
-                                  description="Наблюдатель заходит в войс", emoji="✅"),
-            discord.SelectOption(label="Выключить egoist", value="egoist_off",
-                                  description="Наблюдатель выходит (режим авто)", emoji="⛔"),
-            discord.SelectOption(label="Отключить egoist полностью", value="egoist_disable",
-                                  description="Не реагирует ни на что", emoji="🔴"),
-            discord.SelectOption(label="Включить egorik", value="egorik_on",
-                                  description="Наблюдатель заходит в войс", emoji="✅"),
-            discord.SelectOption(label="Выключить egorik", value="egorik_off",
-                                  description="Наблюдатель выходит (режим авто)", emoji="⛔"),
-            discord.SelectOption(label="Отключить egorik полностью", value="egorik_disable",
-                                  description="Не реагирует ни на что", emoji="🔴"),
-            discord.SelectOption(label="Включить ВСЕХ", value="all_on",
-                                  description="Оба наблюдателя заходят", emoji="🟢"),
-            discord.SelectOption(label="Выключить ВСЕХ", value="all_off",
-                                  description="Оба наблюдателя выходят", emoji="🔴"),
-            discord.SelectOption(label="📊 Статус", value="status",
-                                  description="Uptime, пинг, реконнекты", emoji="📊"),
-            discord.SelectOption(label="📈 График реконнектов", value="chart",
-                                  description="За 24 часа", emoji="📈"),
-            discord.SelectOption(label="📜 Последние события", value="log",
-                                  description="Лог действий", emoji="📜"),
-            discord.SelectOption(label="🎙 Кто в войсе", value="who",
-                                  description="Список участников канала", emoji="🎙"),
-        ]
-        super().__init__(placeholder="Выберите действие",
-                          min_values=1, max_values=1,
-                          options=options, custom_id="control_select")
-
-    async def callback(self, interaction: discord.Interaction):
-        v = self.values[0]
-
-        if v == "egoist_on" and watcher_egoist:
-            watcher_egoist.disabled = False
-            watcher_egoist.manual_mode = True
-            await watcher_egoist.connect(MAIN_CHANNEL_ID)
-        elif v == "egoist_off" and watcher_egoist:
-            watcher_egoist.manual_mode = False
-            await watcher_egoist.disconnect()
-        elif v == "egoist_disable" and watcher_egoist:
-            watcher_egoist.disabled = True
-            watcher_egoist.manual_mode = False
-            await watcher_egoist.disconnect()
-
-        elif v == "egorik_on" and watcher_egorik:
-            watcher_egorik.disabled = False
-            watcher_egorik.manual_mode = True
-            await watcher_egorik.connect(MAIN_CHANNEL_ID)
-        elif v == "egorik_off" and watcher_egorik:
-            watcher_egorik.manual_mode = False
-            await watcher_egorik.disconnect()
-        elif v == "egorik_disable" and watcher_egorik:
-            watcher_egorik.disabled = True
-            watcher_egorik.manual_mode = False
-            await watcher_egorik.disconnect()
-
-        elif v == "all_on":
-            async def _do_all_on():
-                for w in (watcher_egoist, watcher_egorik):
-                    if w:
-                        w.disabled = False
-                        w.manual_mode = True
-                        await w.connect(MAIN_CHANNEL_ID)
-            await confirm_action(interaction, "Включить ВСЕХ наблюдателей", _do_all_on)
-            return
-        elif v == "all_off":
-            async def _do_all_off():
-                for w in (watcher_egoist, watcher_egorik):
-                    if w:
-                        w.manual_mode = False
-                        await w.disconnect()
-            await confirm_action(interaction, "Выключить ВСЕХ наблюдателей", _do_all_off)
-            return
-
-        elif v == "status":
-            uptime = int(time.time() - start_time)
-            h, m, s = uptime // 3600, (uptime % 3600) // 60, uptime % 60
-            await interaction.response.send_message(
-                f"**📊 Статус системы**\n"
-                f"Uptime: `{h}ч {m}м {s}с`\n\n"
-                f"**Реконнекты:**\n"
-                f"`main   ` {reconnect_stats['main']}\n"
-                f"`second ` {reconnect_stats['second']}\n"
-                f"`egoist ` {reconnect_stats['egoist']}\n"
-                f"`egorik ` {reconnect_stats['egorik']}\n\n"
-                f"**📡 Пинг до Discord:**\n{get_latency_info()}",
-                ephemeral=True,
-            )
-            return
-
-        elif v == "chart":
-            lines = ["**📈 Реконнекты за 24ч**\n"]
-            for name in ["main", "second", "egoist", "egorik"]:
-                chart = build_reconnect_chart(name, 24)
-                lines.append(f"`{name:8}` {chart}  всего: {reconnect_stats[name]}")
-            await interaction.response.send_message("\n".join(lines), ephemeral=True)
-            return
-
-        elif v == "log":
-            if not event_log:
-                await interaction.response.send_message("Событий нет.", ephemeral=True)
-                return
-            await interaction.response.send_message(
-                "**📜 Последние события:**\n```\n" +
-                "\n".join(list(event_log)[-15:]) + "\n```",
-                ephemeral=True,
-            )
-            return
-
-        elif v == "who":
-            channel = main_client.get_channel(MAIN_CHANNEL_ID)
-            if not channel:
-                await interaction.response.send_message("Канал не найден.", ephemeral=True)
-                return
-            members = [m.display_name for m in channel.members]
-            if not members:
-                await interaction.response.send_message("Никого в войсе.", ephemeral=True)
-                return
-            await interaction.response.send_message(
-                f"**🎙 В войсе ({len(members)}):**\n" +
-                "\n".join(f"• {m}" for m in members),
-                ephemeral=True,
-            )
-            return
-
-        embed = build_panel_embed()
-        await interaction.response.edit_message(embed=embed, view=self.view)
-
-
-class PanelView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-        self.add_item(ActionSelect())
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        return interaction.user.id in (USER_ID_EGOIST, USER_ID_EGORIK)
-
-    @discord.ui.button(label="🔄 Обновить", style=discord.ButtonStyle.secondary,
-                        custom_id="refresh", row=1)
-    async def refresh_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.edit_message(embed=build_panel_embed(), view=self)
-
-    @discord.ui.button(label="Render", style=discord.ButtonStyle.link,
-                        url=os.getenv("RENDER_URL", "https://tt11tt.onrender.com"),
-                        row=1)
-    async def render_link(self, interaction: discord.Interaction, button: discord.ui.Button):
-        pass
-
-
-def build_panel_embed() -> discord.Embed:
+def build_panel_text() -> str:
     def w_state(w):
         if not w:
             return "❌ не инициализирован"
@@ -892,58 +764,40 @@ def build_panel_embed() -> discord.Embed:
     main_vc = main_client.voice_clients[0] if main_client.voice_clients else None
     main_in = "🟢 в войсе" if (main_vc and main_vc.is_connected()) else "🔴 нет"
 
-    embed = discord.Embed(
-        title="🎛 Панель управления наблюдателями",
-        description=(
-            "Управляйте твинками `egoist` и `egorik`.\n"
-            "**Основные боты работают 24/7 автоматически.**"
-        ),
-        color=discord.Color.from_rgb(88, 101, 242),
-        timestamp=discord.utils.utcnow(),
-    )
-
-    embed.add_field(
-        name="Фон:",
-        value=(
-            f"• Канал: <#{MAIN_CHANNEL_ID}>\n"
-            f"• MAIN-бот: {main_in}\n"
-            f"• Реконнектов MAIN: `{reconnect_stats['main']}`"
-        ),
-        inline=False,
-    )
-
-    embed.add_field(
-        name="egoist:",
-        value=(
-            f"• {w_state(watcher_egoist)}\n"
-            f"• Реконнектов — `{reconnect_stats['egoist']}`"
-        ),
-        inline=True,
-    )
-
-    embed.add_field(
-        name="egorik:",
-        value=(
-            f"• {w_state(watcher_egorik)}\n"
-            f"• Реконнектов — `{reconnect_stats['egorik']}`"
-        ),
-        inline=True,
-    )
-
-    embed.add_field(
-        name="Режимы:",
-        value=(
-            "🟢 **Ручной** — сидит в войсе, игнорирует владельца.\n"
-            "⚙️ **Авто** — ушёл владелец → заходит, вернулся → выходит.\n"
-            "🔴 **Отключён** — не реагирует ни на что."
-        ),
-        inline=False,
-    )
-
     uptime = int(time.time() - start_time)
     h, m, s = uptime // 3600, (uptime % 3600) // 60, uptime % 60
-    embed.set_footer(text=f"Uptime: {h}ч {m}м {s}с • TT11TT")
-    return embed
+
+    return (
+        f"🎛 **ПАНЕЛЬ УПРАВЛЕНИЯ**\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"**Фон:**\n"
+        f"• Канал: <#{MAIN_CHANNEL_ID}>\n"
+        f"• MAIN-бот: {main_in}\n"
+        f"• Реконнектов MAIN: `{reconnect_stats['main']}`\n\n"
+        f"**egoist:**\n"
+        f"• {w_state(watcher_egoist)}\n"
+        f"• Реконнектов: `{reconnect_stats['egoist']}`\n\n"
+        f"**egorik:**\n"
+        f"• {w_state(watcher_egorik)}\n"
+        f"• Реконнектов: `{reconnect_stats['egorik']}`\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"**Команды управления:**\n"
+        f"`!on egoist` — включить (ручной режим)\n"
+        f"`!off egoist` — выключить (режим авто)\n"
+        f"`!disable egoist` — отключить полностью\n"
+        f"`!on egorik` / `!off egorik` / `!disable egorik`\n"
+        f"`!all on` / `!all off` — все сразу\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"**Информация:**\n"
+        f"`!status` — статус системы\n"
+        f"`!chart` — график реконнектов (24ч)\n"
+        f"`!log` — последние события\n"
+        f"`!who` — кто в войсе\n"
+        f"`!ping` — проверка\n"
+        f"`!tgtest` — тест Telegram\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"Uptime: `{h}ч {m}м {s}с`"
+    )
 
 
 # ====================================================
@@ -970,7 +824,20 @@ async def daily_report_task():
             )
             ping = int(watcher_egoist.client.latency * 1000) if watcher_egoist else 0
 
-            report = (
+            # Discord — markdown
+            await send_dm_notification(
+                USER_ID_EGOIST,
+                f"📅 **Ежедневный отчёт — egoist**\n\n"
+                f"🕐 Uptime: `{h}ч {m}м {s}с`\n"
+                f"🔄 Реконнектов за сутки: `{day_reconnects}`\n"
+                f"📊 Всего реконнектов: `{reconnect_stats['egoist']}`\n"
+                f"🎙 В войсе: `{'да' if in_vc else 'нет'}`\n"
+                f"⚙️ Режим: `{mode}`\n"
+                f"📡 Пинг: `{ping}ms`"
+            )
+
+            # Telegram — HTML
+            await send_telegram(
                 f"📅 <b>Ежедневный отчёт — egoist</b>\n\n"
                 f"🕐 Uptime: <code>{h}ч {m}м {s}с</code>\n"
                 f"🔄 Реконнектов за сутки: <code>{day_reconnects}</code>\n"
@@ -979,14 +846,6 @@ async def daily_report_task():
                 f"⚙️ Режим: <code>{mode}</code>\n"
                 f"📡 Пинг: <code>{ping}ms</code>"
             )
-            # В Discord — обычным текстом
-            await send_dm_notification(
-                USER_ID_EGOIST,
-                report.replace("<b>", "**").replace("</b>", "**")
-                      .replace("<code>", "`").replace("</code>", "`")
-            )
-            # В Telegram — с HTML
-            await send_telegram(report)
             log_event("[REPORT] Ежедневный отчёт отправлен")
         except Exception as e:
             log.error(f"[REPORT] Ошибка: {e}")
