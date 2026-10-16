@@ -7,7 +7,6 @@ import asyncio
 import logging
 import random
 import time
-import json
 import aiohttp
 import discord
 from collections import deque
@@ -100,7 +99,7 @@ last_event_time = {
     "egoist": time.time(),
     "egorik": time.time(),
 }
-event_log = deque(maxlen=30)  # последние события
+event_log = deque(maxlen=30)
 main_watchdogs_started = False
 second_watchdogs_started = False
 
@@ -131,14 +130,12 @@ threading.Thread(target=run_web_server, daemon=True).start()
 # УТИЛИТЫ
 # ====================================================
 def log_event(text: str):
-    """Добавляет событие в ring-buffer."""
     ts = time.strftime("%H:%M:%S")
     event_log.append(f"[{ts}] {text}")
     log.info(text)
 
 
 def log_reconnect(name: str):
-    """Регистрирует реконнект."""
     reconnect_stats[name] += 1
     reconnect_history[name].append(time.time())
     log_event(f"🔄 {name}: реконнект #{reconnect_stats[name]}")
@@ -166,7 +163,8 @@ async def send_telegram(text: str):
                 "parse_mode": "HTML",
             }, timeout=10) as resp:
                 if resp.status != 200:
-                    log.warning(f"[TG] Ошибка: {resp.status}")
+                    body = await resp.text()
+                    log.warning(f"[TG] Ошибка {resp.status}: {body}")
     except Exception as e:
         log.warning(f"[TG] Ошибка отправки: {e}")
 
@@ -176,10 +174,11 @@ async def alert_reconnect(name: str):
     now = time.time()
     recent = sum(1 for ts in reconnect_history[name] if ts >= now - 600)
     if recent >= 3:
-        msg = f"🚨 <b>Алерт!</b>\n{name}: {recent} реконнектов за 10 минут.\nПроверь токен и сеть."
+        msg = (f"🚨 <b>Алерт!</b>\n"
+               f"{name}: {recent} реконнектов за 10 минут.\n"
+               f"Проверь токен и сеть.")
         await send_telegram(msg)
-        # Чтобы не спамить — маркер
-        reconnect_history[name].append(now + 600)  # сдвигаем маркер
+        reconnect_history[name].append(now + 600)  # антиспам-маркер
 
 
 async def uptime_pinger():
@@ -298,7 +297,7 @@ class Watcher:
         self.client = discord.Client()
         self.is_reconnecting = False
         self.manual_mode = False
-        self.disabled = False       # полностью выключен
+        self.disabled = False
         self.auto_off_task = None
         self._watchdog_started = False
         self._status_started = False
@@ -395,14 +394,15 @@ class Watcher:
                 pass
 
     async def schedule_auto_off(self, minutes: int):
-        """Выйти через N минут."""
         if self.auto_off_task:
             self.auto_off_task.cancel()
+
         async def _off():
             await asyncio.sleep(minutes * 60)
             self.manual_mode = False
             await self.disconnect()
             log_event(f"[{self.name}] авто-выход по таймеру ({minutes} мин)")
+
         self.auto_off_task = asyncio.create_task(_off())
 
     async def start(self):
@@ -499,7 +499,7 @@ async def on_ready():
             dead_socket_watchdog(main_client, "main", ensure_main_connected)
         )
         main_client.loop.create_task(daily_report_task())
-        main_client.add_view(PanelView())  # восстановление панели
+        main_client.add_view(PanelView())
     await send_dm_notification(USER_ID_EGOIST, "✅ Бот запущен и работает.")
     await send_telegram("✅ <b>TT11TT запущен</b> на Render.")
 
@@ -567,11 +567,15 @@ async def on_message(message):
                                         "\n".join(list(event_log)[-15:]) + "\n```")
         return
 
-    # Fallback: текстовые команды
+    if content == "!tgtest":
+        await send_telegram("🧪 Тестовое сообщение из TT11TT")
+        await message.channel.send("Отправлено в Telegram (если настроен).")
+        return
+
     parts = content.split()
     if len(parts) < 2:
         await message.channel.send(
-            "Команды: `!panel`, `!ping`, `!status`, `!log`, "
+            "Команды: `!panel`, `!ping`, `!status`, `!log`, `!tgtest`, "
             "`!on egoist`, `!off egoist`, `!on egorik`, `!off egorik`"
         )
         return
@@ -681,7 +685,7 @@ async def on_voice_state_update(member, before, after):
 
 
 # ====================================================
-# ПАНЕЛЬ УПРАВЛЕНИЯ (EMBED + SELECT + BUTTONS)
+# ПАНЕЛЬ УПРАВЛЕНИЯ
 # ====================================================
 class ConfirmView(discord.ui.View):
     def __init__(self, action_callback, action_name: str):
@@ -758,7 +762,6 @@ class ActionSelect(discord.ui.Select):
     async def callback(self, interaction: discord.Interaction):
         v = self.values[0]
 
-        # ─── egoist ───
         if v == "egoist_on" and watcher_egoist:
             watcher_egoist.disabled = False
             watcher_egoist.manual_mode = True
@@ -771,7 +774,6 @@ class ActionSelect(discord.ui.Select):
             watcher_egoist.manual_mode = False
             await watcher_egoist.disconnect()
 
-        # ─── egorik ───
         elif v == "egorik_on" and watcher_egorik:
             watcher_egorik.disabled = False
             watcher_egorik.manual_mode = True
@@ -784,7 +786,6 @@ class ActionSelect(discord.ui.Select):
             watcher_egorik.manual_mode = False
             await watcher_egorik.disconnect()
 
-        # ─── Массовые (с 2FA) ───
         elif v == "all_on":
             async def _do_all_on():
                 for w in (watcher_egoist, watcher_egorik):
@@ -803,7 +804,6 @@ class ActionSelect(discord.ui.Select):
             await confirm_action(interaction, "Выключить ВСЕХ наблюдателей", _do_all_off)
             return
 
-        # ─── Статистика ───
         elif v == "status":
             uptime = int(time.time() - start_time)
             h, m, s = uptime // 3600, (uptime % 3600) // 60, uptime % 60
@@ -855,7 +855,6 @@ class ActionSelect(discord.ui.Select):
             )
             return
 
-        # Перерисовываем панель
         embed = build_panel_embed()
         await interaction.response.edit_message(embed=embed, view=self.view)
 
@@ -948,11 +947,9 @@ def build_panel_embed() -> discord.Embed:
 
 
 # ====================================================
-# ЕЖЕДНЕВНЫЙ ОТЧЁТ (только egoist)
+# ЕЖЕДНЕВНЫЙ ОТЧЁТ (egoist)
 # ====================================================
 async def daily_report_task():
-    """Раз в сутки шлёт отчёт по egoist в ЛС USER_ID_EGOIST."""
-    # Ждём первые 24 часа
     await asyncio.sleep(24 * 3600)
     while True:
         try:
@@ -974,15 +971,21 @@ async def daily_report_task():
             ping = int(watcher_egoist.client.latency * 1000) if watcher_egoist else 0
 
             report = (
-                f"📅 **Ежедневный отчёт — egoist**\n\n"
-                f"🕐 Uptime: `{h}ч {m}м {s}с`\n"
-                f"🔄 Реконнектов за сутки: `{day_reconnects}`\n"
-                f"📊 Всего реконнектов: `{reconnect_stats['egoist']}`\n"
-                f"🎙 В войсе: `{'да' if in_vc else 'нет'}`\n"
-                f"⚙️ Режим: `{mode}`\n"
-                f"📡 Пинг: `{ping}ms`"
+                f"📅 <b>Ежедневный отчёт — egoist</b>\n\n"
+                f"🕐 Uptime: <code>{h}ч {m}м {s}с</code>\n"
+                f"🔄 Реконнектов за сутки: <code>{day_reconnects}</code>\n"
+                f"📊 Всего реконнектов: <code>{reconnect_stats['egoist']}</code>\n"
+                f"🎙 В войсе: <code>{'да' if in_vc else 'нет'}</code>\n"
+                f"⚙️ Режим: <code>{mode}</code>\n"
+                f"📡 Пинг: <code>{ping}ms</code>"
             )
-            await send_dm_notification(USER_ID_EGOIST, report)
+            # В Discord — обычным текстом
+            await send_dm_notification(
+                USER_ID_EGOIST,
+                report.replace("<b>", "**").replace("</b>", "**")
+                      .replace("<code>", "`").replace("</code>", "`")
+            )
+            # В Telegram — с HTML
             await send_telegram(report)
             log_event("[REPORT] Ежедневный отчёт отправлен")
         except Exception as e:
