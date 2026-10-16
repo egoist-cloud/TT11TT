@@ -1,2 +1,2 @@
-discord.py-self[voice]==1.9.2
+discord.py-self[voice]>=2.0.0
 aiohttp
