@@ -1,8 +1,13 @@
 services:
   - type: web
     name: TT11TT
+    env: python
     plan: free
+    buildCommand: "apt-get update && apt-get install -y ffmpeg && pip install -r requirements.txt"
+    startCommand: "python bot.py"
     envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.7
       - key: DISCORD_TOKEN_1
         sync: false
       - key: DISCORD_TOKEN_2
@@ -16,8 +21,6 @@ services:
       - key: USER_ID_1
         sync: false
       - key: USER_ID_2
-        sync: false
-      - key: GUILD_ID
         sync: false
       - key: MAIN_BOT_USER_ID
         sync: false
