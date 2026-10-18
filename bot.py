@@ -1,9 +1,6 @@
 # ====================================================
-# TT11TT — Discord боты (v3, исправленная)
+# TT11TT — Discord боты (Финальная стабильная версия)
 # ====================================================
-# ВАЖНО: код рассчитан на ОФИЦИАЛЬНЫЕ bot-токены.
-# Если у тебя юзер-токены (discord.py-self) — бан рано или поздно наступит.
-# Для миграции: discord.com/developers -> приложение -> BOT TOKEN -> Intents.
 import os
 import sys
 import asyncio
@@ -21,7 +18,7 @@ import json
 import traceback
 
 # ====================================================
-# ЛОГИРОВАНИЕ
+# ЛОГИРОВАНИЕ (с принудительным выводом в консоль для Render)
 # ====================================================
 logging.basicConfig(
     level=logging.INFO,
@@ -29,9 +26,20 @@ logging.basicConfig(
     handlers=[
         logging.FileHandler('bot.log', encoding='utf-8'),
         logging.StreamHandler(sys.stdout),
-    ]
+    ],
+    force=True # Важно для Render, чтобы логи не терялись
 )
 log = logging.getLogger(__name__)
+
+# Перехват необработанных исключений, чтобы Render показал причину падения
+def exception_handler(loop, context):
+    log.error("Необработанная ошибка: %s", context.get("exception", context["message"]))
+    exc = context.get("exception")
+    if exc and hasattr(exc, "__traceback__"):
+        log.error("".join(traceback.format_tb(exc.__traceback__)))
+
+loop = asyncio.get_event_loop()
+loop.set_exception_handler(exception_handler)
 
 # ====================================================
 # ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ
@@ -61,7 +69,7 @@ def get_env_bool(name, default=False):
 
 TOKEN_MAIN = get_env_str("DISCORD_TOKEN_1")
 TOKEN_SECOND = get_env_str("DISCORD_TOKEN_4")
-TOKEN_THIRD = get_env_str("DISCORD_TOKEN_5")  # УПРАВЛЯЮЩИЙ
+TOKEN_THIRD = get_env_str("DISCORD_TOKEN_5")
 
 MAIN_CHANNEL_ID = get_env_int("VOICE_CHANNEL_ID")
 GUILD_ID = get_env_int("GUILD_ID")
@@ -90,7 +98,7 @@ log.info("=" * 50)
 # ====================================================
 STATUS_INTERVAL = 3600
 DEAD_SOCKET_TIMEOUT = 900
-DEAD_SOCKET_CRITICAL = 3600         # после этого не спамим реконнектами
+DEAD_SOCKET_CRITICAL = 3600
 CONNECT_TIMEOUT = 60.0
 RECONNECT_MIN_DELAY = 2.0
 RECONNECT_MAX_DELAY = 8.0
@@ -139,7 +147,7 @@ _second_lock = asyncio.Lock()
 _third_lock = asyncio.Lock()
 
 _shutdown_event = asyncio.Event()
-_clients_ready = asyncio.Event()   # для _third_ready_extra
+_clients_ready = asyncio.Event()
 
 # ====================================================
 # КЛИЕНТЫ
@@ -149,7 +157,7 @@ second_client = discord.Client(intents=intents, chunk_guilds_at_startup=False)
 third_client = discord.Client(intents=intents, chunk_guilds_at_startup=False)
 
 # ====================================================
-# ВЕБ-СЕРВЕР (+ /status JSON)
+# ВЕБ-СЕРВЕР
 # ====================================================
 class HealthHandler(BaseHTTPRequestHandler):
     def _respond(self, code, body, ctype="text/plain"):
@@ -205,7 +213,6 @@ def log_reconnect(name: str):
     log_event(f"реконнект {name} #{reconnect_stats[name]}")
 
 async def get_cached_user(client, user_id):
-    """get_user с fallback на fetch_user. Без этого events молча пропускались."""
     if not user_id:
         return None
     user = _user_cache.get(user_id)
@@ -321,7 +328,6 @@ def fmt_uptime() -> str:
 # ====================================================
 async def status_changer(client, name):
     if not STATUS_ROTATION:
-        log.info("[%s] ротация статусов выключена (STATUS_ROTATION=off)", name)
         return
     while not _shutdown_event.is_set():
         try:
@@ -335,19 +341,20 @@ async def status_changer(client, name):
                         timestamps={"start": int(time.time() * 1000)},
                     )
                 elif r < 0.7:
-                    activity = discord.Activity(type=discord.ActivityType.watching,
-                                                name=random.choice(WATCHING_STATUSES))
+                    activity = discord.Activity(
+                        type=discord.ActivityType.watching,
+                        name=random.choice(WATCHING_STATUSES)
+                    )
                 else:
-                    activity = discord.Activity(type=discord.ActivityType.playing,
-                                                name=random.choice(TEXT_STATUSES))
+                    activity = discord.Activity(
+                        type=discord.ActivityType.playing,
+                        name=random.choice(TEXT_STATUSES)
+                    )
                 await client.change_presence(activity=activity)
         except Exception as e:
             log.warning("[%s] ошибка статуса: %s", name, e)
         try:
-            await asyncio.wait_for(
-                _shutdown_event.wait(),
-                timeout=STATUS_INTERVAL + random.uniform(0, 300),
-            )
+            await asyncio.wait_for(_shutdown_event.wait(), timeout=STATUS_INTERVAL + random.uniform(0, 300))
         except asyncio.TimeoutError:
             pass
 
@@ -361,11 +368,10 @@ class Watcher:
         self.name = name
         self.client = discord.Client(intents=intents, chunk_guilds_at_startup=False)
         self.client.is_afk = False
-        self.is_reconnecting = False
         self.manual_mode = False
         self.disabled = False
         self._started = set()
-        self._connect_lock = None   # создаём лениво в start(), чтобы не зависеть от loop
+        self._connect_lock = None
         self._register_events()
 
     def _task_once(self, key, coro):
@@ -481,7 +487,7 @@ class Watcher:
             if silence > DEAD_SOCKET_CRITICAL:
                 log.critical(
                     "[%s] молчание %dс (>%dс) — возможно, токен мёртв. "
-                    "Реконнекты приостановлены до восстановления событий.",
+                    "Реконнекты приостановлены.",
                     self.name, int(silence), DEAD_SOCKET_CRITICAL,
                 )
                 continue
@@ -506,7 +512,6 @@ class Watcher:
             try:
                 channel = self.client.get_channel(channel_id)
                 if not channel:
-                    # канал мог не попасть в кэш — пробуем fetch
                     try:
                         channel = await self.client.fetch_channel(channel_id)
                     except Exception:
@@ -544,7 +549,7 @@ class Watcher:
         while not _shutdown_event.is_set():
             try:
                 await self.client.start(self.token)
-                delay = 30   # если start вернулся штатно — сбрасываем backoff
+                delay = 30
             except discord.HTTPException as e:
                 if e.status == 429:
                     log.error("[%s] 429, жду %dс", self.name, delay)
@@ -569,13 +574,11 @@ async def _ensure_connected(client_name):
     client = _CLIENTS[client_name]
     if MAIN_CHANNEL_ID == 0:
         return
-    # Проверяем «уже подключены» быстро, без lock
     if (client.voice_clients
             and client.voice_clients[0].is_connected()
             and client.voice_clients[0].channel.id == MAIN_CHANNEL_ID):
         return
     async with _LOCKS[client_name]:
-        # повторная проверка внутри lock
         if (client.voice_clients
                 and client.voice_clients[0].is_connected()
                 and client.voice_clients[0].channel.id == MAIN_CHANNEL_ID):
@@ -587,7 +590,6 @@ async def _ensure_connected(client_name):
             except Exception:
                 log.warning("[%s] канал %s не найден", client_name.upper(), MAIN_CHANNEL_ID)
                 return
-        # отключаемся ДО lock-секции сна (sleep — вне lock не сделать, поэтому просто тут)
         if client.voice_clients:
             try:
                 await client.voice_clients[0].disconnect(force=True)
@@ -667,7 +669,6 @@ def _bind_client_events(name, client, watchdog_coro, ready_extra=None):
             await _ensure_connected(name)
 
 async def _third_ready_extra():
-    # ждём, пока watcher'ы создадутся (они создаются в main() до старта клиентов)
     try:
         await asyncio.wait_for(_clients_ready.wait(), timeout=10)
     except asyncio.TimeoutError:
@@ -701,7 +702,6 @@ async def on_message(message):
 
     content = message.content.strip().lower()
 
-    # ---------- ПАНЕЛЬ ----------
     if content in ("!status", "!panel", "!menu"):
         def w_state(w):
             if not w:
@@ -736,21 +736,18 @@ async def on_message(message):
         total_messages_sent += 1
         return
 
-    # ---------- UPTIME ----------
     if content == "!uptime":
         await message.channel.send(f"Uptime: `{fmt_uptime()}`")
         total_messages_sent += 1
         return
 
-    # ---------- PING ----------
     if content == "!ping":
         start_ping = time.time()
         msg = await message.channel.send("🏓 Пингую узлы...")
         total_messages_sent += 1
         api_ping, api_status = -1, "ошибка"
         async with aiohttp.ClientSession() as session:
-            for url in ("https://discord.com/api/v10/gateway",
-                        "https://discord.com/api/v9/gateway"):
+            for url in ("https://discord.com/api/v10/gateway", "https://discord.com/api/v9/gateway"):
                 try:
                     t0 = time.time()
                     async with session.get(url, timeout=5) as resp:
@@ -779,7 +776,6 @@ async def on_message(message):
         ))
         return
 
-    # ---------- STATS ----------
     if content == "!stats":
         stats_text = (
             f"📊 **СТАТИСТИКА**\n"
@@ -800,14 +796,12 @@ async def on_message(message):
         total_messages_sent += 1
         return
 
-    # ---------- LOG ----------
     if content == "!log":
         logs = "\n".join(list(event_log)[-15:]) if event_log else "пусто"
         await message.channel.send(f"**📜 Лог:**\n```\n{logs}\n```")
         total_messages_sent += 1
         return
 
-    # ---------- CHART ----------
     if content == "!chart":
         lines = ["**📈 Реконнекты за 24ч**\n"]
         for n in reconnect_stats:
@@ -816,7 +810,6 @@ async def on_message(message):
         total_messages_sent += 1
         return
 
-    # ---------- WHO ----------
     if content == "!who":
         channel = third_client.get_channel(MAIN_CHANNEL_ID)
         if not channel:
@@ -830,7 +823,6 @@ async def on_message(message):
             return
         members = list(getattr(channel, "members", []) or [])
         if not members:
-            # selfbot / нет кэша — пытаемся подтянуть участников
             guild = getattr(channel, "guild", None)
             if guild is not None:
                 try:
@@ -848,14 +840,12 @@ async def on_message(message):
         total_messages_sent += 1
         return
 
-    # ---------- TGTEST ----------
     if content == "!tgtest":
         await send_telegram("🧪 Тестовое сообщение из TT11TT")
         await message.channel.send("Отправлено в Telegram.")
         total_messages_sent += 1
         return
 
-    # ---------- AFK ----------
     if content == "!afk":
         target = (watcher_egoist if message.author.id == USER_ID_EGOIST
                   else watcher_egorik if message.author.id == USER_ID_EGORIK else None)
@@ -866,7 +856,6 @@ async def on_message(message):
             total_messages_sent += 1
         return
 
-    # ---------- ALL ON / OFF ----------
     if content == "!all on":
         for w in (watcher_egoist, watcher_egorik):
             if w:
@@ -888,7 +877,6 @@ async def on_message(message):
         total_messages_sent += 1
         return
 
-    # ---------- ON / OFF <target> ----------
     parts = content.split()
     if len(parts) >= 2:
         cmd, target_name = parts[0], parts[1]
@@ -910,10 +898,9 @@ async def on_message(message):
                 total_messages_sent += 1
 
 # ====================================================
-# ЕЖЕДНЕВНЫЙ ОТЧЁТ (первый — через 60с)
+# ЕЖЕДНЕВНЫЙ ОТЧЁТ
 # ====================================================
 async def daily_report_task():
-    # первый отчёт быстрее, чтобы сразу видеть, что всё работает
     try:
         await asyncio.wait_for(_shutdown_event.wait(), timeout=60)
         return
@@ -980,10 +967,9 @@ async def safe_start(client, token, name):
 async def main():
     global watcher_egoist, watcher_egorik
     log.info("-" * 40)
-    log.info("   TT11TT v3 — старт")
+    log.info("   TT11TT — старт")
     log.info("-" * 40)
 
-    # Создаём watcher'ов ДО старта клиентов, чтобы _third_ready_extra видел их не-None
     watcher_egoist = Watcher(TOKEN_EGOIST, USER_ID_EGOIST, "Egoist") if TOKEN_EGOIST else None
     watcher_egorik = Watcher(TOKEN_EGORIK, USER_ID_EGORIK, "Egorik") if TOKEN_EGORIK else None
     _clients_ready.set()
