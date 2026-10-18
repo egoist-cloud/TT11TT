@@ -73,12 +73,14 @@ GUILD_ID = get_env_int("GUILD_ID")
 RENDER_URL = get_env_str("RENDER_URL") or "https://tt11tt.onrender.com"
 TELEGRAM_TOKEN = get_env_str("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = get_env_str("TELEGRAM_CHAT_ID")
-STATUS_ROTATION = get_env_bool("STATUS_ROTATION", True)
+
+# По умолчанию FALSE - боты не будут менять статус на игры
+STATUS_ROTATION = get_env_bool("STATUS_ROTATION", False) 
 
 log.info("=" * 50)
 log.info("Управляющий (Main) + Дежурные (Egoist, Egorik)")
 log.info("Канал: %s | Гильдия: %s", MAIN_CHANNEL_ID, GUILD_ID or "все")
-log.info("ВСЕ БОТЫ СИДЯТ В СЕТИ И ЖДУТ КОМАНДУ !on")
+log.info("Статус-ротация: %s", "ВКЛ" if STATUS_ROTATION else "ВЫКЛ (не палимся)")
 log.info("=" * 50)
 
 # ====================================================
@@ -95,9 +97,6 @@ GAMES_POOL = [
     {"name": "Counter-Strike 2", "app_id": 730},
     {"name": "Dota 2", "app_id": 570},
     {"name": "PUBG: BATTLEGROUNDS", "app_id": 578080},
-    {"name": "Apex Legends", "app_id": 1172470},
-    {"name": "Grand Theft Auto V", "app_id": 271590},
-    {"name": "Rust", "app_id": 252490},
 ]
 TEXT_STATUSES = ["Commback", "TALENT 24/7", "На страже", "Сижу в войсе"]
 WATCHING_STATUSES = ["как вы играете", "на ваши сообщения", "за порядком"]
@@ -166,34 +165,27 @@ async def auto_delete_message(msg, delay=MESSAGE_DELETE_DELAY):
     except Exception: pass
 
 # ====================================================
-# СМЕНА СТАТУСА
+# СМЕНА СТАТУСА (Теперь по умолчанию ничего не ставит)
 # ====================================================
 async def status_changer(client, name):
-    if not STATUS_ROTATION: return
+    # Если STATUS_ROTATION выключен (False), мы просто выходим и ничего не меняем
+    if not STATUS_ROTATION: 
+        return
     while not _shutdown_event.is_set():
         try:
             if not getattr(client, "is_afk", False) and client.is_ready():
-                r = random.random()
-                if r < 0.4:
-                    game = random.choice(GAMES_POOL)
-                    activity = discord.Activity(
-                        type=discord.ActivityType.playing, name=game["name"],
-                        application_id=game["app_id"],
-                        timestamps={"start": int(time.time() * 1000)}
-                    )
-                elif r < 0.7:
-                    activity = discord.Activity(
-                        type=discord.ActivityType.watching, name=random.choice(WATCHING_STATUSES)
-                    )
-                else:
-                    activity = discord.Activity(
-                        type=discord.ActivityType.playing, name=random.choice(TEXT_STATUSES)
-                    )
+                # Только если включено вручную в Render
+                game = random.choice(GAMES_POOL)
+                activity = discord.Activity(
+                    type=discord.ActivityType.playing, name=game["name"],
+                    application_id=game["app_id"],
+                    timestamps={"start": int(time.time() * 1000)}
+                )
                 await client.change_presence(activity=activity)
         except Exception as e:
             log.warning("[%s] ошибка статуса: %s", name, e)
         try:
-            await asyncio.wait_for(_shutdown_event.wait(), timeout=3600 + random.uniform(0, 300))
+            await asyncio.wait_for(_shutdown_event.wait(), timeout=3600)
         except asyncio.TimeoutError: pass
 
 # ====================================================
@@ -235,7 +227,6 @@ class Watcher:
             me = self.client.user
             if me is None: return
             
-            # Если бот вылетел/кикнут
             if member.id == me.id:
                 if self.disabled or not self.manual_mode: return
                 if not after.channel or after.channel.id != MAIN_CHANNEL_ID:
@@ -246,7 +237,6 @@ class Watcher:
                         await self.connect(MAIN_CHANNEL_ID)
 
     async def watchdog(self):
-        """Сторожевой таймер: проверяет, должен ли бот быть в канале."""
         while not _shutdown_event.is_set():
             await asyncio.sleep(5)
             if self.disabled or not self.manual_mode:
@@ -329,8 +319,7 @@ class Watcher:
 @main_client.event
 async def on_ready():
     log.info("[MAIN] Управляющий бот запущен под прикрытием как %s", main_client.user)
-    if STATUS_ROTATION:
-        main_client.loop.create_task(status_changer(main_client, "MAIN"))
+    main_client.loop.create_task(status_changer(main_client, "MAIN"))
     await send_telegram(f"👑 <b>Управляющий (Main) запущен</b>\nАптайм: <code>{tg_escape(fmt_uptime())}</code>")
 
 @main_client.event
