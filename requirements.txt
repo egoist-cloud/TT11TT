@@ -2,3 +2,4 @@ git+https://github.com/dolfies/discord.py-self@master
 aiohttp
 PyNaCl
 brotli
+davey
