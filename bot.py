@@ -1,5 +1,5 @@
 # ====================================================
-# TT11TT — Discord боты (main + second + 2 наблюдателя)
+# TT11TT — Discord боты
 # ====================================================
 import os
 import sys
@@ -15,54 +15,62 @@ import threading
 import traceback
 
 # ====================================================
-# ЛОГИРОВАНИЕ
+# ЛОГИРОВАНИЕ (Выводит всё в консоль Render)
 # ====================================================
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(message)s',
-    handlers=[
-        logging.FileHandler('bot.log', encoding='utf-8'),
-        logging.StreamHandler(sys.stdout),
-    ]
+    handlers=[logging.StreamHandler(sys.stdout)]
 )
 log = logging.getLogger(__name__)
 
 # ====================================================
-# ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ
+# БЕЗОПАСНАЯ ЗАГРУЗКА ПЕРЕМЕННЫХ
 # ====================================================
-TOKEN_MAIN = os.getenv("DISCORD_TOKEN_1")
-TOKEN_SECOND = os.getenv("DISCORD_TOKEN_4")
-MAIN_CHANNEL_ID = int(os.getenv("VOICE_CHANNEL_ID", "0"))
+def get_env_int(name, default=0):
+    val = os.getenv(name)
+    if not val:
+        if default == 0:
+            log.error(f"❌ КРИТИЧЕСКАЯ ОШИБКА: Переменная {name} не задана в Render!")
+        return default
+    try:
+        return int(val)
+    except ValueError:
+        log.error(f"❌ КРИТИЧЕСКАЯ ОШИБКА: Переменная {name} должна быть числом, а не '{val}'!")
+        return default
 
-TOKEN_EGOIST = os.getenv("DISCORD_TOKEN_2")
-USER_ID_EGOIST = int(os.getenv("USER_ID_1", "0"))
-
-TOKEN_EGORIK = os.getenv("DISCORD_TOKEN_3")
-USER_ID_EGORIK = int(os.getenv("USER_ID_2", "0"))
-
-GUILD_ID = int(os.getenv("GUILD_ID", "0"))
-MAIN_BOT_USER_ID = int(os.getenv("MAIN_BOT_USER_ID", "1241012523952508978"))
-RENDER_URL = os.getenv("RENDER_URL", "https://tt11tt.onrender.com")
-
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+def get_env_str(name):
+    val = os.getenv(name)
+    if not val:
+        log.warning(f"⚠️ Внимание: Переменная {name} не задана.")
+    return val
 
 log.info("=" * 50)
-log.info("ЗАГРУЗКА ПЕРЕМЕННЫХ:")
-log.info(f"  TOKEN_MAIN: {'есть' if TOKEN_MAIN else 'НЕТ'}")
-log.info(f"  TOKEN_SECOND: {'есть' if TOKEN_SECOND else 'НЕТ'}")
-log.info(f"  TOKEN_EGOIST: {'есть' if TOKEN_EGOIST else 'НЕТ'}")
-log.info(f"  TOKEN_EGORIK: {'есть' if TOKEN_EGORIK else 'НЕТ'}")
-log.info(f"  MAIN_CHANNEL_ID: {MAIN_CHANNEL_ID}")
+log.info("ЗАГРУЗКА ПЕРЕМЕННЫХ ОКРУЖЕНИЯ:")
+TOKEN_MAIN = get_env_str("DISCORD_TOKEN_1")
+TOKEN_SECOND = get_env_str("DISCORD_TOKEN_4")
+MAIN_CHANNEL_ID = get_env_int("VOICE_CHANNEL_ID")
+
+TOKEN_EGOIST = get_env_str("DISCORD_TOKEN_2")
+USER_ID_EGOIST = get_env_int("USER_ID_1")
+
+TOKEN_EGORIK = get_env_str("DISCORD_TOKEN_3")
+USER_ID_EGORIK = get_env_int("USER_ID_2")
+
+MAIN_BOT_USER_ID = get_env_int("MAIN_BOT_USER_ID", 1241012523952508978)
+RENDER_URL = get_env_str("RENDER_URL") or "https://tt11tt.onrender.com"
+TELEGRAM_TOKEN = get_env_str("TELEGRAM_TOKEN")
+TELEGRAM_CHAT_ID = get_env_str("TELEGRAM_CHAT_ID")
 log.info("=" * 50)
 
 if MAIN_CHANNEL_ID == 0:
-    raise ValueError("Не задан VOICE_CHANNEL_ID")
+    log.error("❌ Бот не может запуститься без VOICE_CHANNEL_ID. Проверьте Environment в Render.")
+    sys.exit(1) # Принудительно завершаем, чтобы Render показал ошибку
 
 # ====================================================
 # КОНСТАНТЫ
 # ====================================================
-STATUS_INTERVAL = 1800  # 30 минут
+STATUS_INTERVAL = 1800
 
 GAMES_POOL = [
     {"name": "Counter-Strike 2", "app_id": 730},
@@ -72,7 +80,6 @@ GAMES_POOL = [
     {"name": "Grand Theft Auto V", "app_id": 271590},
     {"name": "Rust", "app_id": 252490},
 ]
-
 TEXT_STATUSES = ["Commback", "TALENT 24/7", "На страже", "Сижу в войсе", "zzZ", "Работаю"]
 
 # ====================================================
@@ -84,11 +91,9 @@ start_time = time.time()
 reconnect_stats = {"main": 0, "second": 0, "egoist": 0, "egorik": 0}
 reconnect_history = {k: deque(maxlen=200) for k in reconnect_stats}
 event_log = deque(maxlen=30)
-main_watchdogs_started = False
-second_watchdogs_started = False
 
 # ====================================================
-# ВЕБ-СЕРВЕР
+# ВЕБ-СЕРВЕР (Обязателен для Render!)
 # ====================================================
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -102,7 +107,9 @@ class HealthHandler(BaseHTTPRequestHandler):
 
 def run_web_server():
     port = int(os.getenv("PORT", 10000))
-    HTTPServer(("0.0.0.0", port), HealthHandler).serve_forever()
+    log.info(f"Запуск веб-сервера на порту {port}...")
+    server = HTTPServer(("0.0.0.0", port), HealthHandler)
+    server.serve_forever()
 
 threading.Thread(target=run_web_server, daemon=True).start()
 
@@ -133,7 +140,6 @@ async def send_telegram(text: str):
 async def status_changer(client, name):
     while True:
         try:
-            # Если включен AFK - не трогаем статус
             if not getattr(client, 'is_afk', False):
                 if random.random() < 0.5:
                     game = random.choice(GAMES_POOL)
@@ -151,7 +157,7 @@ async def status_changer(client, name):
         await asyncio.sleep(STATUS_INTERVAL)
 
 # ====================================================
-# ДЕЖУРНЫЙ (НАБЛЮДАТЕЛЬ)
+# НАБЛЮДАТЕЛИ (Selfbot)
 # ====================================================
 class Watcher:
     def __init__(self, token, user_id, name):
@@ -164,10 +170,10 @@ class Watcher:
         intents.members = True
         
         self.client = discord.Client(intents=intents)
-        self.client.is_afk = False  # Флаг AFK для смены статуса
+        self.client.is_afk = False
         
         self.is_reconnecting = False
-        self.manual_mode = False # По умолчанию авто
+        self.manual_mode = False
         self.disabled = False
         self._watchdog_started = False
         self._status_started = False
@@ -176,7 +182,7 @@ class Watcher:
     def _register_events(self):
         @self.client.event
         async def on_ready():
-            log.info(f"[{self.name}] Авторизован как {self.client.user}")
+            log.info(f"[{self.name}] Успешно авторизован как {self.client.user}")
             if not self._watchdog_started:
                 self._watchdog_started = True
                 self.client.loop.create_task(self.watchdog())
@@ -202,7 +208,6 @@ class Watcher:
 
         @self.client.event
         async def on_voice_state_update(member, before, after):
-            # 1. Если кикнули бота
             if member.id == self.client.user.id:
                 if self.disabled or not self.manual_mode: return
                 if not after.channel or after.channel.id != MAIN_CHANNEL_ID:
@@ -211,54 +216,42 @@ class Watcher:
                     await asyncio.sleep(2)
                     if self.manual_mode and not self.disabled:
                         await self.connect(MAIN_CHANNEL_ID)
-
-            # 2. Если владелец зашел в войс (и мы в ручном режиме)
             elif member.id == self.user_id and after.channel:
                 if self.manual_mode and not self.disabled:
                     if not self.client.voice_clients or self.client.voice_clients[0].channel.id != after.channel.id:
                         await self.connect(after.channel.id)
-            
-            # 3. Если владелец вышел из войса
             elif member.id == self.user_id and not after.channel:
                 if self.manual_mode and not self.disabled:
                     if self.client.voice_clients and self.client.voice_clients[0].channel.id != MAIN_CHANNEL_ID:
                         await self.connect(MAIN_CHANNEL_ID)
 
     async def toggle_afk(self):
-        """Переключает режим AFK (мьют + глухота)."""
         vc = self.client.voice_clients[0] if self.client.voice_clients else None
-        if not vc or not vc.is_connected():
-            return False, "Бот не в войсе"
-
+        if not vc or not vc.is_connected(): return False, "Бот не в войсе"
         self.client.is_afk = not self.client.is_afk
         try:
             if self.client.is_afk:
                 await vc.guild.change_voice_state(channel=vc.channel, self_mute=True, self_deaf=True)
-                # Ставим статус AFK
                 await self.client.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name="AFK"))
                 return True, "включен"
             else:
                 await vc.guild.change_voice_state(channel=vc.channel, self_mute=False, self_deaf=False)
                 return True, "выключен"
         except Exception as e:
-            log.warning(f"[{self.name}] Ошибка AFK: {e}")
             return False, str(e)
 
     async def watchdog(self):
         while True:
-            await asyncio.sleep(3) # 3 сек для мгновенного возврата
+            await asyncio.sleep(3)
             if self.disabled or not self.manual_mode: continue
-            
             owner_in_vc = False
             if self.user_id:
                 try:
                     user = self.client.get_user(self.user_id)
                     if user and user.voice and user.voice.channel: owner_in_vc = True
                 except Exception: pass
-            
             if not owner_in_vc:
                 if (not self.client.voice_clients or not self.client.voice_clients[0].is_connected() or self.client.voice_clients[0].channel.id != MAIN_CHANNEL_ID):
-                    log.warning(f"[{self.name}] Не в канале. Возвращаю...")
                     log_reconnect(self.name.lower())
                     await self.connect(MAIN_CHANNEL_ID)
 
@@ -269,12 +262,10 @@ class Watcher:
             channel = self.client.get_channel(channel_id)
             if not channel: return
             if (self.client.voice_clients and self.client.voice_clients[0].is_connected() and self.client.voice_clients[0].channel.id == channel_id): return
-            
             if self.client.voice_clients:
                 try: await self.client.voice_clients[0].disconnect(force=True)
                 except Exception: pass
                 await asyncio.sleep(1)
-                
             await channel.connect(timeout=30.0, self_deaf=False, self_mute=False)
             log.info(f"[{self.name}] Подключен к {channel.name}")
         except Exception as e:
@@ -287,18 +278,17 @@ class Watcher:
             try:
                 await self.client.voice_clients[0].disconnect(force=True)
                 self.client.is_afk = False
-                log.info(f"[{self.name}] Вышел из канала.")
             except Exception: pass
 
     async def start(self):
-        while True:
-            try: await self.client.start(self.token)
-            except Exception as e:
-                log.error(f"[{self.name}] Упал: {e}. Перезапуск через 30 сек.")
-                await asyncio.sleep(30)
+        try:
+            await self.client.start(self.token)
+        except Exception as e:
+            log.error(f"❌ [{self.name}] Ошибка запуска (возможно, неверный токен): {e}")
+            raise e # Пробрасываем ошибку, чтобы Render показал её в логах
 
 # ====================================================
-# MAIN и SECOND БОТЫ
+# MAIN и SECOND (Боты)
 # ====================================================
 main_client = discord.Client()
 main_reconnecting = False
@@ -315,11 +305,10 @@ async def ensure_main_connected():
             try: await main_client.voice_clients[0].disconnect(force=True)
             except Exception: pass
             await asyncio.sleep(1)
-        for _ in range(5):
-            try:
-                await channel.connect(timeout=30.0, self_deaf=False, self_mute=False)
-                return
-            except Exception: await asyncio.sleep(5)
+        await channel.connect(timeout=30.0, self_deaf=False, self_mute=False)
+        log.info(f"[MAIN] Подключен к {channel.name}")
+    except Exception as e:
+        log.warning(f"[MAIN] Ошибка подключения: {e}")
     finally: main_reconnecting = False
 
 async def main_watchdog():
@@ -331,13 +320,10 @@ async def main_watchdog():
 
 @main_client.event
 async def on_ready():
-    global main_watchdogs_started
-    log.info(f"[MAIN] Авторизован как {main_client.user}")
+    log.info(f"[MAIN] Успешно авторизован как {main_client.user}")
     await ensure_main_connected()
-    if not main_watchdogs_started:
-        main_watchdogs_started = True
-        main_client.loop.create_task(main_watchdog())
-        main_client.loop.create_task(status_changer(main_client, "MAIN"))
+    main_client.loop.create_task(main_watchdog())
+    main_client.loop.create_task(status_changer(main_client, "MAIN"))
     await send_telegram("✅ <b>TT11TT запущен</b> на Render.")
 
 @main_client.event
@@ -362,11 +348,10 @@ async def ensure_second_connected():
             try: await second_client.voice_clients[0].disconnect(force=True)
             except Exception: pass
             await asyncio.sleep(1)
-        for _ in range(5):
-            try:
-                await channel.connect(timeout=30.0, self_deaf=False, self_mute=False)
-                return
-            except Exception: await asyncio.sleep(5)
+        await channel.connect(timeout=30.0, self_deaf=False, self_mute=False)
+        log.info(f"[SECOND] Подключен к {channel.name}")
+    except Exception as e:
+        log.warning(f"[SECOND] Ошибка подключения: {e}")
     finally: second_reconnecting = False
 
 async def second_watchdog():
@@ -378,13 +363,10 @@ async def second_watchdog():
 
 @second_client.event
 async def on_ready():
-    global second_watchdogs_started
-    log.info(f"[SECOND] Авторизован как {second_client.user}")
+    log.info(f"[SECOND] Успешно авторизован как {second_client.user}")
     await ensure_second_connected()
-    if not second_watchdogs_started:
-        second_watchdogs_started = True
-        second_client.loop.create_task(second_watchdog())
-        second_client.loop.create_task(status_changer(second_client, "SECOND"))
+    second_client.loop.create_task(second_watchdog())
+    second_client.loop.create_task(status_changer(second_client, "SECOND"))
 
 @second_client.event
 async def on_voice_state_update(member, before, after):
@@ -394,15 +376,14 @@ async def on_voice_state_update(member, before, after):
         await ensure_second_connected()
 
 # ====================================================
-# КОМАНДЫ И ПАНЕЛЬ
+# КОМАНДЫ
 # ====================================================
 def build_panel_text() -> str:
     def w_state(w):
         if not w: return "❌ нет"
         if w.disabled: return "🔴 выключен"
         afk = "💤 [AFK]" if getattr(w.client, 'is_afk', False) else ""
-        if w.manual_mode: return f"🟢 ручной {afk}"
-        return f"⚙️ авто {afk}"
+        return f"🟢 ручной {afk}" if w.manual_mode else f"⚙️ авто {afk}"
 
     uptime = int(time.time() - start_time)
     h, m, s = uptime // 3600, (uptime % 3600) // 60, uptime % 60
@@ -410,14 +391,12 @@ def build_panel_text() -> str:
     return (
         f"🎛 **ПАНЕЛЬ УПРАВЛЕНИЯ**\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"**Наблюдатели:**\n"
         f"• egoist: {w_state(watcher_egoist)}\n"
         f"• egorik: {w_state(watcher_egorik)}\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"**Команды:**\n"
         f"`!on egoist` / `!off egoist`\n"
         f"`!all on` / `!all off`\n"
-        f"`!afk` — уйти в AFK (мьют)\n"
+        f"`!afk` — режим AFK\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"Uptime: `{h}ч {m}м {s}с`"
     )
@@ -434,94 +413,69 @@ async def on_message(message):
         await message.channel.send(build_panel_text())
         return
 
-    # --- AFK ---
     if content == "!afk":
-        # Определяем, кто пишет
-        target_watcher = None
-        if message.author.id == USER_ID_EGOIST: target_watcher = watcher_egoist
-        elif message.author.id == USER_ID_EGORIK: target_watcher = watcher_egorik
-        
-        if target_watcher:
-            success, state = await target_watcher.toggle_afk()
-            if success:
-                await message.channel.send(f"💤 Режим AFK {state} для аккаунта <@{message.author.id}>.")
-            else:
-                await message.channel.send(f"⚠️ Ошибка: {state}")
-        else:
-            await message.channel.send("⚠️ Не удалось определить ваш аккаунт для AFK.")
+        target = watcher_egoist if message.author.id == USER_ID_EGOIST else (watcher_egorik if message.author.id == USER_ID_EGORIK else None)
+        if target:
+            success, state = await target.toggle_afk()
+            msg = f"💤 Режим AFK {state}." if success else f"⚠️ Ошибка: {state}"
+            await message.channel.send(msg)
         return
 
     if content == "!all on":
         for w in (watcher_egoist, watcher_egorik):
-            if w:
-                w.disabled = False
-                w.manual_mode = True
-                await w.connect(MAIN_CHANNEL_ID)
-        await message.channel.send("✅ Все наблюдатели включены.")
+            if w: w.disabled = False; w.manual_mode = True; await w.connect(MAIN_CHANNEL_ID)
+        await message.channel.send("✅ Все включены.")
         return
     
     if content == "!all off":
         for w in (watcher_egoist, watcher_egorik):
-            if w:
-                w.manual_mode = False
-                w.disabled = True
-                await w.disconnect()
-        await message.channel.send("⛔ Все наблюдатели выключены.")
+            if w: w.manual_mode = False; w.disabled = True; await w.disconnect()
+        await message.channel.send("⛔ Все выключены.")
         return
 
     parts = content.split()
-    if len(parts) < 2: return
-    command, target = parts[0], parts[1]
-
-    if target == "egoist" and watcher_egoist:
-        if command == "!on":
-            watcher_egoist.disabled = False
-            watcher_egoist.manual_mode = True
-            await watcher_egoist.connect(MAIN_CHANNEL_ID)
-            await message.channel.send("✅ Бот `egoist` в ручном режиме.")
-        elif command == "!off":
-            watcher_egoist.manual_mode = False
-            watcher_egoist.disabled = False
-            await watcher_egoist.disconnect()
-            await message.channel.send("⚙️ Бот `egoist` в авто-режиме.")
-
-    elif target == "egorik" and watcher_egorik:
-        if command == "!on":
-            watcher_egorik.disabled = False
-            watcher_egorik.manual_mode = True
-            await watcher_egorik.connect(MAIN_CHANNEL_ID)
-            await message.channel.send("✅ Бот `egorik` в ручном режиме.")
-        elif command == "!off":
-            watcher_egorik.manual_mode = False
-            watcher_egorik.disabled = False
-            await watcher_egorik.disconnect()
-            await message.channel.send("⚙️ Бот `egorik` в авто-режиме.")
+    if len(parts) >= 2:
+        cmd, target_name = parts[0], parts[1]
+        w = watcher_egoist if target_name == "egoist" else (watcher_egorik if target_name == "egorik" else None)
+        if w:
+            if cmd == "!on":
+                w.disabled = False; w.manual_mode = True; await w.connect(MAIN_CHANNEL_ID)
+                await message.channel.send(f"✅ {target_name} в ручном режиме.")
+            elif cmd == "!off":
+                w.manual_mode = False; w.disabled = False; await w.disconnect()
+                await message.channel.send(f"⚙️ {target_name} в авто-режиме.")
 
 # ====================================================
 # ЗАПУСК
 # ====================================================
-async def safe_start(client, token, name):
-    while True:
-        try: await client.start(token)
-        except Exception as e:
-            log.error(f"[{name}] Упал: {e}. Перезапуск...")
-            await asyncio.sleep(30)
-
 async def main():
     global watcher_egoist, watcher_egorik
+
+    log.info("Создание клиентов...")
     watcher_egoist = Watcher(TOKEN_EGOIST, USER_ID_EGOIST, "Egoist")
     watcher_egorik = Watcher(TOKEN_EGORIK, USER_ID_EGORIK, "Egorik")
 
-    tasks = [
-        safe_start(main_client, TOKEN_MAIN, "MAIN"),
-        watcher_egoist.start(),
-        watcher_egorik.start(),
-    ]
-    if TOKEN_SECOND:
-        tasks.append(safe_start(second_client, TOKEN_SECOND, "SECOND"))
+    tasks = []
+    
+    # Безопасно добавляем задачи
+    if TOKEN_MAIN: tasks.append(main_client.start(TOKEN_MAIN))
+    if TOKEN_EGOIST: tasks.append(watcher_egoist.start())
+    if TOKEN_EGORIK: tasks.append(watcher_egorik.start())
+    if TOKEN_SECOND: tasks.append(second_client.start(TOKEN_SECOND))
 
-    await asyncio.gather(*tasks)
+    if not tasks:
+        log.error("❌ Ни один токен не задан! Проверь Environment Variables.")
+        sys.exit(1)
+
+    log.info("Запуск всех ботов...")
+    # gather запускает всех одновременно. Если кто-то падает, остальные продолжают работать.
+    await asyncio.gather(*tasks, return_exceptions=True)
 
 if __name__ == "__main__":
-    try: asyncio.run(main())
-    except Exception as e: log.error(f"КРИТИЧЕСКАЯ ОШИБКА: {e}")
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass
+    except Exception as e:
+        log.error(f"КРИТИЧЕСКАЯ ОШИБКА: {e}")
+        traceback.print_exc()
