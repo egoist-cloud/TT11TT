@@ -564,11 +564,11 @@ async def on_message(message):
 
     content = message.content.strip().lower()
 
-    # КОМАНДЫ ПАНЕЛИ (setup и help)
-    if content in ("!status", "!setup", "!help", "!menu", "!panel"):
+    # КОМАНДЫ ПАНЕЛИ (status, panel, menu)
+    if content in ("!status", "!panel", "!menu"):
         def w_state(w):
             if not w: return "❌ нет"
-            if w.disabled: return "🔴 выключен"
+            if w.disabled: return "🔴 отключён"
             afk = "💤 [AFK]" if getattr(w.client, 'is_afk', False) else ""
             return f"🟢 ручной {afk}" if w.manual_mode else f"⚙️ авто {afk}"
 
@@ -580,18 +580,31 @@ async def on_message(message):
         panel = (
             f"🎛 **ПАНЕЛЬ УПРАВЛЕНИЯ (THIRD)**\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"**Фон:**\n"
             f"• Канал: <#{MAIN_CHANNEL_ID}>\n"
-            f"• THIRD: {third_in} (рек: `{reconnect_stats['third']}`)\n\n"
-            f"• egoist: {w_state(watcher_egoist)} (рек: `{reconnect_stats['egoist']}`)\n"
-            f"• egorik: {w_state(watcher_egorik)} (рек: `{reconnect_stats['egorik']}`)\n"
+            f"• THIRD-бот: {third_in}\n"
+            f"• Реконнектов THIRD: `{reconnect_stats['third']}`\n\n"
+            f"**egoist:**\n"
+            f"• {w_state(watcher_egoist)}\n"
+            f"• Реконнектов: `{reconnect_stats['egoist']}`\n\n"
+            f"**egorik:**\n"
+            f"• {w_state(watcher_egorik)}\n"
+            f"• Реконнектов: `{reconnect_stats['egorik']}`\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"**Команды:**\n"
-            f"`!on egoist` / `!off egoist`\n"
-            f"`!all on` / `!all off`\n"
-            f"`!afk` — режим AFK\n"
-            f"`!ping` — проверить задержку\n"
+            f"**Команды управления:**\n"
+            f"`!on egoist` — включить (ручной режим)\n"
+            f"`!off egoist` — выключить (режим авто)\n"
+            f"`!on egorik` / `!off egorik`\n"
+            f"`!all on` / `!all off` — все сразу\n"
+            f"`!afk` — уйти в AFK (мьют)\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"**Информация:**\n"
+            f"`!ping` — умный пинг\n"
             f"`!stats` — статистика\n"
-            f"`!log` `!chart` `!who` `!tgtest`\n"
+            f"`!chart` — график реконнектов (24ч)\n"
+            f"`!log` — последние события\n"
+            f"`!who` — кто в войсе\n"
+            f"`!tgtest` — тест Telegram\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"Uptime: `{h}ч {m}м {s}с`\n\n"
             f"**📡 Пинг:**\n{get_latency_info()}"
