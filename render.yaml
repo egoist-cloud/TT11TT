@@ -3,7 +3,7 @@ services:
     name: TT11TT
     env: python
     plan: free
-    buildCommand: "apt-get update && apt-get install -y ffmpeg && pip install -r requirements.txt"
+    buildCommand: "apt-get update && apt-get install -y libffi-dev libsodium-dev && pip install -r requirements.txt"
     startCommand: "python bot.py"
     envVars:
       - key: PYTHON_VERSION
@@ -14,10 +14,6 @@ services:
         sync: false
       - key: DISCORD_TOKEN_3
         sync: false
-      - key: DISCORD_TOKEN_4
-        sync: false
-      - key: DISCORD_TOKEN_5
-        sync: false
       - key: VOICE_CHANNEL_ID
         sync: false
       - key: USER_ID_1
@@ -25,6 +21,8 @@ services:
       - key: USER_ID_2
         sync: false
       - key: MAIN_BOT_USER_ID
+        sync: false
+      - key: GUILD_ID
         sync: false
       - key: RENDER_URL
         sync: false
