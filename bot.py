@@ -1,5 +1,5 @@
 # ====================================================
-# TT11TT — Discord боты (Финальная стабильная версия)
+# TT11TT — Discord боты (THIRD = управляющий)
 # ====================================================
 import os
 import sys
@@ -13,6 +13,7 @@ from collections import deque
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
 import traceback
+from datetime import datetime
 
 # ====================================================
 # ЛОГИРОВАНИЕ
@@ -48,6 +49,8 @@ log.info("ЗАГРУЗКА ПЕРЕМЕННЫХ ОКРУЖЕНИЯ:")
 
 TOKEN_MAIN = get_env_str("DISCORD_TOKEN_1")
 TOKEN_SECOND = get_env_str("DISCORD_TOKEN_4")
+TOKEN_THIRD = get_env_str("DISCORD_TOKEN_5") # <--- УПРАВЛЯЮЩИЙ БОТ
+
 MAIN_CHANNEL_ID = get_env_int("VOICE_CHANNEL_ID")
 GUILD_ID = get_env_int("GUILD_ID")
 
@@ -71,8 +74,10 @@ log.info("=" * 50)
 # ====================================================
 # КОНСТАНТЫ
 # ====================================================
-STATUS_INTERVAL = 1800          # 30 минут
-DEAD_SOCKET_TIMEOUT = 600       # 10 минут без событий = мёртвый сокет
+STATUS_INTERVAL = 3600  # Увеличили до 1 часа (меньше подозрений)
+DEAD_SOCKET_TIMEOUT = 600
+ACTION_DELAY_MIN = 2    # Мин. задержка перед действием (сек)
+ACTION_DELAY_MAX = 10   # Макс. задержка перед действием (сек)
 
 GAMES_POOL = [
     {"name": "Counter-Strike 2", "app_id": 730},
@@ -84,6 +89,7 @@ GAMES_POOL = [
 ]
 
 TEXT_STATUSES = ["Commback", "TALENT 24/7", "На страже", "Сижу в войсе", "zzZ", "Работаю"]
+WATCHING_STATUSES = ["как вы играете", "на ваши сообщения", "за порядком", "как падает пинг"]
 
 # ====================================================
 # ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ
@@ -91,15 +97,19 @@ TEXT_STATUSES = ["Commback", "TALENT 24/7", "На страже", "Сижу в в
 watcher_egoist = None
 watcher_egorik = None
 start_time = time.time()
-reconnect_stats = {"main": 0, "second": 0, "egoist": 0, "egorik": 0}
+
+reconnect_stats = {"main": 0, "second": 0, "third": 0, "egoist": 0, "egorik": 0}
 reconnect_history = {k: deque(maxlen=200) for k in reconnect_stats}
-last_event_time = {"main": time.time(), "second": time.time(), "egoist": time.time(), "egorik": time.time()}
+last_event_time = {"main": time.time(), "second": time.time(), "third": time.time(), "egoist": time.time(), "egorik": time.time()}
+total_messages_sent = 0
 event_log = deque(maxlen=30)
+
 main_watchdogs_started = False
 second_watchdogs_started = False
+third_watchdogs_started = False
 
 # ====================================================
-# ВЕБ-СЕРВЕР (Для Render Health Check)
+# ВЕБ-СЕРВЕР
 # ====================================================
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -133,10 +143,14 @@ def log_reconnect(name: str):
     log_event(f"🔄 {name}: реконнект #{reconnect_stats[name]}")
 
 async def send_dm_notification(user_id, text):
-    if not main_client or not main_client.is_ready(): return
+    global total_messages_sent
+    # Используем THIRD-клиент для отправки уведомлений (он управляющий)
+    if not third_client or not third_client.is_ready(): return
     try:
-        user = await main_client.fetch_user(user_id)
-        if user: await user.send(text)
+        user = await third_client.fetch_user(user_id)
+        if user: 
+            await user.send(text)
+            total_messages_sent += 1
     except Exception as e:
         log.warning(f"Не удалось отправить уведомление: {e}")
 
@@ -147,8 +161,7 @@ async def send_telegram(text: str):
             url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
             async with session.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML"}, timeout=10) as resp:
                 if resp.status != 200:
-                    body = await resp.text()
-                    log.warning(f"[TG] Ошибка {resp.status}: {body}")
+                    log.warning(f"[TG] Ошибка {resp.status}")
     except Exception as e:
         log.warning(f"[TG] Ошибка отправки: {e}")
 
@@ -188,6 +201,7 @@ def get_latency_info() -> str:
     pairs = [
         ("main", main_client),
         ("second", second_client if TOKEN_SECOND else None),
+        ("third", third_client if TOKEN_THIRD else None),
         ("egoist", watcher_egoist.client if watcher_egoist else None),
         ("egorik", watcher_egorik.client if watcher_egorik else None),
     ]
@@ -199,13 +213,17 @@ def get_latency_info() -> str:
     return "\n".join(info) if info else "нет данных"
 
 # ====================================================
-# СМЕНА СТАТУСА
+# СМЕНА СТАТУСА (с задержкой)
 # ====================================================
 async def status_changer(client, name):
     while True:
         try:
             if not getattr(client, 'is_afk', False):
-                if random.random() < 0.5:
+                # Случайная задержка перед сменой статуса (маскировка)
+                await asyncio.sleep(random.randint(ACTION_DELAY_MIN, ACTION_DELAY_MAX))
+                
+                r = random.random()
+                if r < 0.4:
                     game = random.choice(GAMES_POOL)
                     activity = discord.Activity(
                         type=discord.ActivityType.playing,
@@ -213,6 +231,8 @@ async def status_changer(client, name):
                         application_id=game["app_id"],
                         timestamps={'start': int(time.time() * 1000)},
                     )
+                elif r < 0.7:
+                    activity = discord.Activity(type=discord.ActivityType.watching, name=random.choice(WATCHING_STATUSES))
                 else:
                     activity = discord.Activity(type=discord.ActivityType.playing, name=random.choice(TEXT_STATUSES))
                 await client.change_presence(activity=activity)
@@ -221,7 +241,31 @@ async def status_changer(client, name):
         await asyncio.sleep(STATUS_INTERVAL)
 
 # ====================================================
-# НАБЛЮДАТЕЛИ (Selfbot)
+# АВТО-СМЕНА НИКОВ
+# ====================================================
+async def nickname_changer(client, name, original_name):
+    while True:
+        try:
+            guild = client.get_guild(GUILD_ID)
+            if guild:
+                current_hour = datetime.now().hour
+                if 0 <= current_hour < 8:
+                    new_nick = f"[zzZ] {original_name}"
+                elif 8 <= current_hour < 18:
+                    new_nick = f"[active] {original_name}"
+                else:
+                    new_nick = f"[chill] {original_name}"
+                
+                me = guild.me
+                if me and me.nick != new_nick:
+                    await me.edit(nick=new_nick)
+                    log.info(f"[{name}] Ник изменен на {new_nick}")
+        except Exception as e:
+            log.warning(f"[{name}] Ошибка смены ника: {e}")
+        await asyncio.sleep(3600)
+
+# ====================================================
+# НАБЛЮДАТЕЛИ (Selfbot) — без изменений
 # ====================================================
 class Watcher:
     def __init__(self, token, user_id, name):
@@ -229,7 +273,6 @@ class Watcher:
         self.user_id = user_id
         self.name = name
         
-        # Оптимизация памяти и защита от 429 (без скачивания всех серверов)
         self.client = discord.Client(chunk_guilds_at_startup=False)
         self.client.is_afk = False
         
@@ -263,7 +306,6 @@ class Watcher:
             if self.disabled or self.manual_mode: return
             if after.id != self.user_id: return
 
-            # Защита от вылета при странных статусах
             try:
                 if after.status == discord.Status.offline:
                     log_event(f"[{self.name}] Владелец ушёл в офлайн. Захожу через 30с.")
@@ -373,15 +415,27 @@ class Watcher:
         while True:
             try:
                 await self.client.start(self.token)
+            except discord.HTTPException as e:
+                if e.status == 429:
+                    log.error(f"❌ [{self.name}] Cloudflare 429. Жду 60 секунд...")
+                    await asyncio.sleep(60)
+                    continue
+                log.error(f"❌ [{self.name}] HTTP ошибка {e.status}. Рестарт через 30 сек.")
+                await asyncio.sleep(30)
             except Exception as e:
-                log.error(f"❌ [{self.name}] Ошибка запуска: {e}. Перезапуск через 30 сек.")
+                log.error(f"❌ [{self.name}] Ошибка: {e}. Рестарт через 30 сек.")
                 await asyncio.sleep(30)
 
 # ====================================================
-# MAIN и SECOND (Боты)
+# MAIN, SECOND, THIRD (Боты 24/7)
 # ====================================================
 main_client = discord.Client(chunk_guilds_at_startup=False)
+second_client = discord.Client(chunk_guilds_at_startup=False)
+third_client = discord.Client(chunk_guilds_at_startup=False)
+
 main_reconnecting = False
+second_reconnecting = False
+third_reconnecting = False
 
 async def ensure_main_connected():
     global main_reconnecting
@@ -401,61 +455,6 @@ async def ensure_main_connected():
         log.warning(f"[MAIN] Ошибка подключения: {e}")
     finally: main_reconnecting = False
 
-async def main_watchdog():
-    while True:
-        await asyncio.sleep(3)
-        if (not main_client.voice_clients or not main_client.voice_clients[0].is_connected() or main_client.voice_clients[0].channel.id != MAIN_CHANNEL_ID):
-            log_reconnect("main")
-            await ensure_main_connected()
-
-async def main_dead_socket_watchdog():
-    while True:
-        await asyncio.sleep(60)
-        silence = time.time() - last_event_time.get("main", time.time())
-        if silence > DEAD_SOCKET_TIMEOUT:
-            log.warning(f"[MAIN] 🔴 Мёртвый сокет ({int(silence)}с). Принудительный реконнект...")
-            log_reconnect("main")
-            if main_client.voice_clients:
-                try: await main_client.voice_clients[0].disconnect(force=True)
-                except Exception: pass
-            await asyncio.sleep(2)
-            await ensure_main_connected()
-
-@main_client.event
-async def on_ready():
-    global main_watchdogs_started
-    log.info(f"[MAIN] Авторизован как {main_client.user}")
-    await ensure_main_connected()
-    if not main_watchdogs_started:
-        main_watchdogs_started = True
-        main_client.loop.create_task(main_watchdog())
-        main_client.loop.create_task(status_changer(main_client, "MAIN"))
-        main_client.loop.create_task(uptime_pinger())
-        main_client.loop.create_task(main_dead_socket_watchdog())
-        main_client.loop.create_task(daily_report_task())
-    await send_dm_notification(USER_ID_EGOIST, "✅ Бот запущен и работает.")
-    await send_telegram("✅ <b>TT11TT запущен</b> на Render.")
-
-@main_client.event
-async def on_socket_event_type(event_type):
-    last_event_time["main"] = time.time()
-
-@main_client.event
-async def on_voice_state_update(member, before, after):
-    last_event_time["main"] = time.time()
-    if GUILD_ID != 0 and member.guild.id != GUILD_ID: return
-    if member.id != main_client.user.id: return
-    if not after.channel or after.channel.id != MAIN_CHANNEL_ID:
-        log_reconnect("main")
-        await send_dm_notification(USER_ID_EGOIST, "⚠️ Бот `commback` вылетел. Переподключаюсь...")
-        await send_telegram("⚠️ <b>MAIN вылетел</b>. Переподключаюсь...")
-        await asyncio.sleep(2)
-        await ensure_main_connected()
-        await alert_reconnect("main")
-
-second_client = discord.Client(chunk_guilds_at_startup=False)
-second_reconnecting = False
-
 async def ensure_second_connected():
     global second_reconnecting
     if second_reconnecting or MAIN_CHANNEL_ID == 0: return
@@ -474,12 +473,72 @@ async def ensure_second_connected():
         log.warning(f"[SECOND] Ошибка подключения: {e}")
     finally: second_reconnecting = False
 
+async def ensure_third_connected():
+    global third_reconnecting
+    if third_reconnecting or MAIN_CHANNEL_ID == 0: return
+    third_reconnecting = True
+    try:
+        channel = third_client.get_channel(MAIN_CHANNEL_ID)
+        if not channel: return
+        if (third_client.voice_clients and third_client.voice_clients[0].is_connected() and third_client.voice_clients[0].channel.id == MAIN_CHANNEL_ID): return
+        if third_client.voice_clients:
+            try: await third_client.voice_clients[0].disconnect(force=True)
+            except Exception: pass
+            await asyncio.sleep(1)
+        await channel.connect(timeout=30.0, self_deaf=False, self_mute=False)
+        log.info(f"[THIRD] Подключен к {channel.name}")
+    except Exception as e:
+        log.warning(f"[THIRD] Ошибка подключения: {e}")
+    finally: third_reconnecting = False
+
+async def main_watchdog():
+    while True:
+        await asyncio.sleep(3)
+        if (not main_client.voice_clients or not main_client.voice_clients[0].is_connected() or main_client.voice_clients[0].channel.id != MAIN_CHANNEL_ID):
+            log_reconnect("main")
+            await ensure_main_connected()
+
 async def second_watchdog():
     while True:
         await asyncio.sleep(3)
         if (not second_client.voice_clients or not second_client.voice_clients[0].is_connected() or second_client.voice_clients[0].channel.id != MAIN_CHANNEL_ID):
             log_reconnect("second")
             await ensure_second_connected()
+
+async def third_watchdog():
+    while True:
+        await asyncio.sleep(3)
+        if (not third_client.voice_clients or not third_client.voice_clients[0].is_connected() or third_client.voice_clients[0].channel.id != MAIN_CHANNEL_ID):
+            log_reconnect("third")
+            await ensure_third_connected()
+
+@main_client.event
+async def on_ready():
+    global main_watchdogs_started
+    log.info(f"[MAIN] Авторизован как {main_client.user}")
+    await ensure_main_connected()
+    if not main_watchdogs_started:
+        main_watchdogs_started = True
+        main_client.loop.create_task(main_watchdog())
+        main_client.loop.create_task(status_changer(main_client, "MAIN"))
+        main_client.loop.create_task(nickname_changer(main_client, "MAIN", "commback"))
+        main_client.loop.create_task(uptime_pinger())
+        main_client.loop.create_task(daily_report_task())
+
+@main_client.event
+async def on_socket_event_type(event_type):
+    last_event_time["main"] = time.time()
+
+@main_client.event
+async def on_voice_state_update(member, before, after):
+    last_event_time["main"] = time.time()
+    if GUILD_ID != 0 and member.guild.id != GUILD_ID: return
+    if member.id != main_client.user.id: return
+    if not after.channel or after.channel.id != MAIN_CHANNEL_ID:
+        log_reconnect("main")
+        await asyncio.sleep(2)
+        await ensure_main_connected()
+        await alert_reconnect("main")
 
 @second_client.event
 async def on_ready():
@@ -490,6 +549,7 @@ async def on_ready():
         second_watchdogs_started = True
         second_client.loop.create_task(second_watchdog())
         second_client.loop.create_task(status_changer(second_client, "SECOND"))
+        second_client.loop.create_task(nickname_changer(second_client, "SECOND", "second"))
 
 @second_client.event
 async def on_socket_event_type(event_type):
@@ -505,99 +565,172 @@ async def on_voice_state_update(member, before, after):
         await ensure_second_connected()
 
 # ====================================================
-# ЕЖЕДНЕВНЫЙ ОТЧЕТ
+# THIRD — УПРАВЛЯЮЩИЙ БОТ (принимает команды)
 # ====================================================
-async def daily_report_task():
-    await asyncio.sleep(24 * 3600)
-    while True:
-        try:
-            now = time.time()
-            cutoff = now - 24 * 3600
-            day_reconnects = sum(1 for ts in reconnect_history["egoist"] if ts >= cutoff)
-            uptime = int(time.time() - start_time)
-            h, m, s = uptime // 3600, (uptime % 3600) // 60, uptime % 60
+@third_client.event
+async def on_ready():
+    global third_watchdogs_started
+    log.info(f"[THIRD] Авторизован как {third_client.user} (Управляющий)")
+    await ensure_third_connected()
+    if not third_watchdogs_started:
+        third_watchdogs_started = True
+        third_client.loop.create_task(third_watchdog())
+        third_client.loop.create_task(status_changer(third_client, "THIRD"))
+        third_client.loop.create_task(nickname_changer(third_client, "THIRD", "third"))
+    
+    # Отправляем уведомление о запуске от имени THIRD
+    await send_dm_notification(USER_ID_EGOIST, "✅ Управляющий бот (THIRD) запущен.")
+    await send_telegram("✅ <b>TT11TT (THIRD) запущен</b> на Render.")
 
-            vc = None
-            if watcher_egoist and watcher_egoist.client.voice_clients:
-                vc = watcher_egoist.client.voice_clients[0]
-            in_vc = vc and vc.is_connected()
-            mode = "отключён" if (watcher_egoist and watcher_egoist.disabled) else ("ручной" if (watcher_egoist and watcher_egoist.manual_mode) else "авто")
-            ping = int(watcher_egoist.client.latency * 1000) if watcher_egoist else 0
+@third_client.event
+async def on_socket_event_type(event_type):
+    last_event_time["third"] = time.time()
 
-            await send_dm_notification(USER_ID_EGOIST, f"📅 **Ежедневный отчёт**\n🕐 Uptime: `{h}ч {m}м {s}с`\n🔄 Реконнектов за сутки: `{day_reconnects}`\n⚙️ Режим: `{mode}`\n📡 Пинг: `{ping}ms`")
-            await send_telegram(f"📅 <b>Отчёт egoist</b>\n🕐 Uptime: <code>{h}ч {m}м {s}с</code>\n🔄 Реконнектов: <code>{day_reconnects}</code>\n⚙️ Режим: <code>{mode}</code>\n📡 Пинг: <code>{ping}ms</code>")
-            log_event("[REPORT] Ежедневный отчёт отправлен")
-        except Exception as e:
-            log.error(f"[REPORT] Ошибка: {e}")
-        await asyncio.sleep(24 * 3600)
+@third_client.event
+async def on_voice_state_update(member, before, after):
+    last_event_time["third"] = time.time()
+    if GUILD_ID != 0 and member.guild.id != GUILD_ID: return
+    if member.id != third_client.user.id: return
+    if not after.channel or after.channel.id != MAIN_CHANNEL_ID:
+        log_reconnect("third")
+        await ensure_third_connected()
 
-# ====================================================
-# ТЕКСТОВАЯ ПАНЕЛЬ И КОМАНДЫ
-# ====================================================
-def build_panel_text() -> str:
-    def w_state(w):
-        if not w: return "❌ нет"
-        if w.disabled: return "🔴 выключен"
-        afk = "💤 [AFK]" if getattr(w.client, 'is_afk', False) else ""
-        return f"🟢 ручной {afk}" if w.manual_mode else f"⚙️ авто {afk}"
-
-    main_vc = main_client.voice_clients[0] if main_client.voice_clients else None
-    main_in = "🟢 в войсе" if (main_vc and main_vc.is_connected()) else "🔴 нет"
-    uptime = int(time.time() - start_time)
-    h, m, s = uptime // 3600, (uptime % 3600) // 60, uptime % 60
-
-    return (
-        f"🎛 **ПАНЕЛЬ УПРАВЛЕНИЯ**\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"• Канал: <#{MAIN_CHANNEL_ID}>\n"
-        f"• MAIN: {main_in} (рек: `{reconnect_stats['main']}`)\n\n"
-        f"• egoist: {w_state(watcher_egoist)} (рек: `{reconnect_stats['egoist']}`)\n"
-        f"• egorik: {w_state(watcher_egorik)} (рек: `{reconnect_stats['egorik']}`)\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"**Команды:**\n"
-        f"`!on egoist` / `!off egoist`\n"
-        f"`!all on` / `!all off`\n"
-        f"`!afk` — режим AFK\n"
-        f"`!status` `!log` `!chart` `!who` `!tgtest`\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"Uptime: `{h}ч {m}м {s}с`\n\n"
-        f"**📡 Пинг:**\n{get_latency_info()}"
-    )
-
-@main_client.event
+# КОМАНДЫ ТЕПЕРЬ ОБРАБАТЫВАЮТСЯ THIRD-БОТОМ
+@third_client.event
 async def on_message(message):
-    if message.author.id == main_client.user.id: return
+    global total_messages_sent
+    
+    if message.author.id == third_client.user.id: return
     if not isinstance(message.channel, discord.DMChannel): return
-    if message.author.id not in (USER_ID_EGOIST, USER_ID_EGORIK, MAIN_BOT_USER_ID): return
+    # Разрешаем писать команды владельцам и THIRD-боту
+    if message.author.id not in (USER_ID_EGOIST, USER_ID_EGORIK, MAIN_BOT_USER_ID, third_client.user.id): return
 
     content = message.content.strip().lower()
 
+    # УМНЫЙ ПИНГ
+    if content == "!ping":
+        start_ping = time.time()
+        msg = await message.channel.send("🏓 Пингую узлы...")
+        total_messages_sent += 1
+        
+        async with aiohttp.ClientSession() as session:
+            try:
+                api_start = time.time()
+                async with session.get("https://discord.com/api/v9/gateway", timeout=5) as resp:
+                    api_ping = int((time.time() - api_start) * 1000)
+                    api_status = "🟢 OK" if resp.status == 200 else f"🔴 {resp.status}"
+            except Exception:
+                api_ping = -1
+                api_status = "🔴 Ошибка"
+
+        async with aiohttp.ClientSession() as session:
+            try:
+                web_start = time.time()
+                async with session.get(RENDER_URL, timeout=10) as resp:
+                    web_ping = int((time.time() - web_start) * 1000)
+                    web_status = "🟢 OK" if resp.status == 200 else f"🔴 {resp.status}"
+            except Exception:
+                web_ping = -1
+                web_status = "🔴 Ошибка"
+
+        ws_ping = int(third_client.latency * 1000)
+
+        result_text = (
+            f"🏓 **Умный пинг**\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"🔌 WebSocket (THIRD): `{ws_ping}ms`\n"
+            f"🌐 Discord API: `{api_ping}ms` {api_status}\n"
+            f"🖥 Render Web: `{web_ping}ms` {web_status}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"Задержка сообщения: `{int((time.time() - start_ping) * 1000)}ms`"
+        )
+        await msg.edit(content=result_text)
+        return
+
+    # СТАТИСТИКА
+    if content == "!stats":
+        uptime = int(time.time() - start_time)
+        h, m, s = uptime // 3600, (uptime % 3600) // 60, uptime % 60
+        
+        stats_text = (
+            f"📊 **СТАТИСТИКА БОТОВ**\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"🕐 **Uptime:** `{h}ч {m}м {s}с`\n"
+            f"💬 **Отправлено сообщений:** `{total_messages_sent}`\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"🔄 **Реконнекты (кики):**\n"
+            f"• MAIN: `{reconnect_stats['main']}` раз\n"
+            f"• SECOND: `{reconnect_stats['second']}` раз\n"
+            f"• THIRD: `{reconnect_stats['third']}` раз\n"
+            f"• Egoist: `{reconnect_stats['egoist']}` раз\n"
+            f"• Egorik: `{reconnect_stats['egorik']}` раз\n"
+        )
+        await message.channel.send(stats_text)
+        total_messages_sent += 1
+        return
+
     if content == "!status":
-        await message.channel.send(build_panel_text())
+        # Строим панель от имени THIRD
+        def w_state(w):
+            if not w: return "❌ нет"
+            if w.disabled: return "🔴 выключен"
+            afk = "💤 [AFK]" if getattr(w.client, 'is_afk', False) else ""
+            return f"🟢 ручной {afk}" if w.manual_mode else f"⚙️ авто {afk}"
+
+        third_vc = third_client.voice_clients[0] if third_client.voice_clients else None
+        third_in = "🟢 в войсе" if (third_vc and third_vc.is_connected()) else "🔴 нет"
+        uptime = int(time.time() - start_time)
+        h, m, s = uptime // 3600, (uptime % 3600) // 60, uptime % 60
+
+        panel = (
+            f"🎛 **ПАНЕЛЬ УПРАВЛЕНИЯ (THIRD)**\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"• Канал: <#{MAIN_CHANNEL_ID}>\n"
+            f"• THIRD: {third_in} (рек: `{reconnect_stats['third']}`)\n\n"
+            f"• egoist: {w_state(watcher_egoist)} (рек: `{reconnect_stats['egoist']}`)\n"
+            f"• egorik: {w_state(watcher_egorik)} (рек: `{reconnect_stats['egorik']}`)\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"**Команды:**\n"
+            f"`!on egoist` / `!off egoist`\n"
+            f"`!all on` / `!all off`\n"
+            f"`!afk` — режим AFK\n"
+            f"`!ping` — проверить задержку\n"
+            f"`!stats` — статистика\n"
+            f"`!status` `!log` `!chart` `!who` `!tgtest`\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"Uptime: `{h}ч {m}м {s}с`\n\n"
+            f"**📡 Пинг:**\n{get_latency_info()}"
+        )
+        await message.channel.send(panel)
+        total_messages_sent += 1
         return
 
     if content == "!log":
         logs = "\n".join(list(event_log)[-15:]) if event_log else "Пусто"
         await message.channel.send(f"**📜 Лог:**\n```\n{logs}\n```")
+        total_messages_sent += 1
         return
 
     if content == "!chart":
         lines = ["**📈 Реконнекты за 24ч**\n"]
-        for name in ["main", "second", "egoist", "egorik"]:
+        for name in ["main", "second", "third", "egoist", "egorik"]:
             lines.append(f"`{name:8}` {build_reconnect_chart(name, 24)}  всего: {reconnect_stats[name]}")
         await message.channel.send("\n".join(lines))
+        total_messages_sent += 1
         return
 
     if content == "!who":
-        channel = main_client.get_channel(MAIN_CHANNEL_ID)
+        channel = third_client.get_channel(MAIN_CHANNEL_ID)
         if channel:
             members = [m.display_name for m in channel.members]
             await message.channel.send(f"**🎙 В войсе ({len(members)}):**\n" + "\n".join(f"• {m}" for m in members))
+            total_messages_sent += 1
         return
 
     if content == "!tgtest":
         await send_telegram("🧪 Тестовое сообщение из TT11TT")
         await message.channel.send("Отправлено в Telegram.")
+        total_messages_sent += 1
         return
 
     if content == "!afk":
@@ -606,18 +739,21 @@ async def on_message(message):
             success, state = await target.toggle_afk()
             msg = f"💤 Режим AFK {state}." if success else f"⚠️ Ошибка: {state}"
             await message.channel.send(msg)
+            total_messages_sent += 1
         return
 
     if content == "!all on":
         for w in (watcher_egoist, watcher_egorik):
             if w: w.disabled = False; w.manual_mode = True; await w.connect(MAIN_CHANNEL_ID)
         await message.channel.send("✅ Все включены.")
+        total_messages_sent += 1
         return
     
     if content == "!all off":
         for w in (watcher_egoist, watcher_egorik):
             if w: w.manual_mode = False; w.disabled = True; await w.disconnect()
         await message.channel.send("⛔ Все выключены.")
+        total_messages_sent += 1
         return
 
     parts = content.split()
@@ -628,13 +764,57 @@ async def on_message(message):
             if cmd == "!on":
                 w.disabled = False; w.manual_mode = True; await w.connect(MAIN_CHANNEL_ID)
                 await message.channel.send(f"✅ {target_name} в ручном режиме.")
+                total_messages_sent += 1
             elif cmd == "!off":
                 w.manual_mode = False; w.disabled = False; await w.disconnect()
                 await message.channel.send(f"⚙️ {target_name} в авто-режиме.")
+                total_messages_sent += 1
+
+# ====================================================
+# ЕЖЕДНЕВНЫЙ ОТЧЕТ
+# ====================================================
+async def daily_report_task():
+    await asyncio.sleep(24 * 3600)
+    while True:
+        try:
+            now = time.time()
+            cutoff = now - 24 * 3600
+            day_reconnects = sum(1 for ts in reconnect_history["third"] if ts >= cutoff)
+            uptime = int(time.time() - start_time)
+            h, m, s = uptime // 3600, (uptime % 3600) // 60, uptime % 60
+
+            vc = None
+            if third_client and third_client.voice_clients:
+                vc = third_client.voice_clients[0]
+            in_vc = vc and vc.is_connected()
+            mode = "в войсе" if in_vc else "нет"
+            ping = int(third_client.latency * 1000) if third_client else 0
+
+            await send_dm_notification(USER_ID_EGOIST, f"📅 **Ежедневный отчёт (THIRD)**\n🕐 Uptime: `{h}ч {m}м {s}с`\n🔄 Реконнектов за сутки: `{day_reconnects}`\n⚙️ Режим: `{mode}`\n📡 Пинг: `{ping}ms`")
+            await send_telegram(f"📅 <b>Отчёт THIRD</b>\n🕐 Uptime: <code>{h}ч {m}м {s}с</code>\n🔄 Реконнектов: <code>{day_reconnects}</code>\n⚙️ Режим: <code>{mode}</code>\n📡 Пинг: <code>{ping}ms</code>")
+            log_event("[REPORT] Ежедневный отчёт отправлен")
+        except Exception as e:
+            log.error(f"[REPORT] Ошибка: {e}")
+        await asyncio.sleep(24 * 3600)
 
 # ====================================================
 # ЗАПУСК
 # ====================================================
+async def safe_start(client, token, name):
+    while True:
+        try:
+            await client.start(token)
+        except discord.HTTPException as e:
+            if e.status == 429:
+                log.error(f"❌ [{name}] Cloudflare 429. Жду 60 секунд...")
+                await asyncio.sleep(60)
+                continue
+            log.error(f"❌ [{name}] HTTP ошибка {e.status}. Рестарт через 30 сек.")
+            await asyncio.sleep(30)
+        except Exception as e:
+            log.error(f"❌ [{name}] Ошибка: {e}. Рестарт через 30 сек.")
+            await asyncio.sleep(30)
+
 async def main():
     global watcher_egoist, watcher_egorik
 
@@ -644,23 +824,31 @@ async def main():
 
     tasks = []
     
-    if TOKEN_MAIN: tasks.append(main_client.start(TOKEN_MAIN))
-    if TOKEN_EGOIST: tasks.append(watcher_egoist.start())
-    if TOKEN_EGORIK: tasks.append(watcher_egorik.start())
-    if TOKEN_SECOND: tasks.append(second_client.start(TOKEN_SECOND))
+    if TOKEN_MAIN:
+        tasks.append(safe_start(main_client, TOKEN_MAIN, "MAIN"))
+        await asyncio.sleep(2)
+    
+    if TOKEN_SECOND:
+        tasks.append(safe_start(second_client, TOKEN_SECOND, "SECOND"))
+        await asyncio.sleep(2)
+    
+    if TOKEN_THIRD:
+        tasks.append(safe_start(third_client, TOKEN_THIRD, "THIRD"))
+        await asyncio.sleep(2)
+    
+    if TOKEN_EGOIST:
+        tasks.append(watcher_egoist.start())
+        await asyncio.sleep(2)
+    
+    if TOKEN_EGORIK:
+        tasks.append(watcher_egorik.start())
 
     if not tasks:
         log.error("❌ Ни один токен не задан! Проверь Environment Variables.")
         return
 
     log.info("Запуск всех ботов...")
-    
-    # Запускаем все задачи. Если одна упадет, остальные продолжат работу.
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-    
-    for i, res in enumerate(results):
-        if isinstance(res, Exception):
-            log.error(f"❌ Критическая ошибка в одном из ботов: {res}")
+    await asyncio.gather(*tasks, return_exceptions=True)
 
 if __name__ == "__main__":
     try:
