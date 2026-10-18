@@ -1,5 +1,5 @@
 # ====================================================
-# TT11TT — Discord боты (Полная версия со всеми функциями)
+# TT11TT — Discord боты (Финальная стабильная версия)
 # ====================================================
 import os
 import sys
@@ -99,7 +99,7 @@ main_watchdogs_started = False
 second_watchdogs_started = False
 
 # ====================================================
-# ВЕБ-СЕРВЕР
+# ВЕБ-СЕРВЕР (Для Render Health Check)
 # ====================================================
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -229,8 +229,8 @@ class Watcher:
         self.user_id = user_id
         self.name = name
         
-        # Без Intents!
-        self.client = discord.Client()
+        # Оптимизация памяти и защита от 429 (без скачивания всех серверов)
+        self.client = discord.Client(chunk_guilds_at_startup=False)
         self.client.is_afk = False
         
         self.is_reconnecting = False
@@ -263,16 +263,20 @@ class Watcher:
             if self.disabled or self.manual_mode: return
             if after.id != self.user_id: return
 
-            if after.status == discord.Status.offline:
-                log_event(f"[{self.name}] Владелец ушёл в офлайн. Захожу через 30с.")
-                await asyncio.sleep(30)
-                if not self.disabled and not self.manual_mode:
-                    user = self.client.get_user(self.user_id)
-                    if user and user.status == discord.Status.offline:
-                        await self.connect(MAIN_CHANNEL_ID)
-            elif after.status != discord.Status.offline:
-                log_event(f"[{self.name}] Владелец вернулся. Выхожу.")
-                await self.disconnect()
+            # Защита от вылета при странных статусах
+            try:
+                if after.status == discord.Status.offline:
+                    log_event(f"[{self.name}] Владелец ушёл в офлайн. Захожу через 30с.")
+                    await asyncio.sleep(30)
+                    if not self.disabled and not self.manual_mode:
+                        user = self.client.get_user(self.user_id)
+                        if user and user.status == discord.Status.offline:
+                            await self.connect(MAIN_CHANNEL_ID)
+                elif after.status != discord.Status.offline:
+                    log_event(f"[{self.name}] Владелец вернулся. Выхожу.")
+                    await self.disconnect()
+            except Exception as e:
+                log.warning(f"[{self.name}] Ошибка в on_presence_update: {e}")
 
         @self.client.event
         async def on_voice_state_update(member, before, after):
@@ -366,15 +370,17 @@ class Watcher:
             except Exception: pass
 
     async def start(self):
-        try:
-            await self.client.start(self.token)
-        except Exception as e:
-            log.error(f"❌ [{self.name}] Ошибка запуска: {e}")
+        while True:
+            try:
+                await self.client.start(self.token)
+            except Exception as e:
+                log.error(f"❌ [{self.name}] Ошибка запуска: {e}. Перезапуск через 30 сек.")
+                await asyncio.sleep(30)
 
 # ====================================================
 # MAIN и SECOND (Боты)
 # ====================================================
-main_client = discord.Client()
+main_client = discord.Client(chunk_guilds_at_startup=False)
 main_reconnecting = False
 
 async def ensure_main_connected():
@@ -447,7 +453,7 @@ async def on_voice_state_update(member, before, after):
         await ensure_main_connected()
         await alert_reconnect("main")
 
-second_client = discord.Client()
+second_client = discord.Client(chunk_guilds_at_startup=False)
 second_reconnecting = False
 
 async def ensure_second_connected():
@@ -526,7 +532,7 @@ async def daily_report_task():
         await asyncio.sleep(24 * 3600)
 
 # ====================================================
-# ПАНЕЛЬ И КОМАНДЫ
+# ТЕКСТОВАЯ ПАНЕЛЬ И КОМАНДЫ
 # ====================================================
 def build_panel_text() -> str:
     def w_state(w):
@@ -648,7 +654,13 @@ async def main():
         return
 
     log.info("Запуск всех ботов...")
-    await asyncio.gather(*tasks, return_exceptions=True)
+    
+    # Запускаем все задачи. Если одна упадет, остальные продолжат работу.
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    
+    for i, res in enumerate(results):
+        if isinstance(res, Exception):
+            log.error(f"❌ Критическая ошибка в одном из ботов: {res}")
 
 if __name__ == "__main__":
     try:
