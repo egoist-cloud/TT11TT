@@ -1,5 +1,5 @@
 # ====================================================
-# TT11TT — Управляющий (Main) + Дежурные (Автовозврат)
+# TT11TT — Управляющий (Main) + Дежурные (Строго по команде)
 # ====================================================
 import os
 import sys
@@ -78,6 +78,7 @@ STATUS_ROTATION = get_env_bool("STATUS_ROTATION", True)
 log.info("=" * 50)
 log.info("Управляющий (Main) + Дежурные (Egoist, Egorik)")
 log.info("Канал: %s | Гильдия: %s", MAIN_CHANNEL_ID, GUILD_ID or "все")
+log.info("ВСЕ БОТЫ СИДЯТ В СЕТИ И ЖДУТ КОМАНДУ !on")
 log.info("=" * 50)
 
 # ====================================================
@@ -234,6 +235,7 @@ class Watcher:
             me = self.client.user
             if me is None: return
             
+            # Если бот вылетел/кикнут
             if member.id == me.id:
                 if self.disabled or not self.manual_mode: return
                 if not after.channel or after.channel.id != MAIN_CHANNEL_ID:
@@ -244,6 +246,7 @@ class Watcher:
                         await self.connect(MAIN_CHANNEL_ID)
 
     async def watchdog(self):
+        """Сторожевой таймер: проверяет, должен ли бот быть в канале."""
         while not _shutdown_event.is_set():
             await asyncio.sleep(5)
             if self.disabled or not self.manual_mode:
@@ -336,9 +339,15 @@ async def on_message(message):
     if message.author.id == main_client.user.id: return
     if not isinstance(message.channel, discord.DMChannel): return
     
-    if message.author.id not in (MANAGER_USER_ID, USER_ID_EGOIST, USER_ID_EGORIK): return
-
     content = message.content.strip().lower()
+
+    if content == "!myid":
+        await message.channel.send(f"Твой ID: `{message.author.id}`")
+        return
+
+    if message.author.id not in (MANAGER_USER_ID, USER_ID_EGOIST, USER_ID_EGORIK):
+        log.warning(f"[IGNORE] Сообщение от неизвестного ID: {message.author.id} | Текст: {content}")
+        return
 
     if content in ("!status", "!panel", "!menu"):
         def w_state(w):
