@@ -107,7 +107,7 @@ second_watchdogs_started = False
 third_watchdogs_started = False
 
 # ====================================================
-# ВЕБ-СЕРВЕР (для Render)
+# ВЕБ-СЕРВЕР
 # ====================================================
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -265,7 +265,6 @@ class Watcher:
         @self.client.event
         async def on_presence_update(before, after):
             last_event_time[self.name.lower()] = time.time()
-            # ЗАЩИТА ОТ ОШИБКИ RELATIONSHIP
             if GUILD_ID != 0 and hasattr(after, 'guild') and after.guild and after.guild.id != GUILD_ID: 
                 return
             if self.disabled or self.manual_mode: return
@@ -565,6 +564,42 @@ async def on_message(message):
 
     content = message.content.strip().lower()
 
+    # КОМАНДЫ ПАНЕЛИ (setup и help)
+    if content in ("!status", "!setup", "!help", "!menu", "!panel"):
+        def w_state(w):
+            if not w: return "❌ нет"
+            if w.disabled: return "🔴 выключен"
+            afk = "💤 [AFK]" if getattr(w.client, 'is_afk', False) else ""
+            return f"🟢 ручной {afk}" if w.manual_mode else f"⚙️ авто {afk}"
+
+        third_vc = third_client.voice_clients[0] if third_client.voice_clients else None
+        third_in = "🟢 в войсе" if (third_vc and third_vc.is_connected()) else "🔴 нет"
+        uptime = int(time.time() - start_time)
+        h, m, s = uptime // 3600, (uptime % 3600) // 60, uptime % 60
+
+        panel = (
+            f"🎛 **ПАНЕЛЬ УПРАВЛЕНИЯ (THIRD)**\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"• Канал: <#{MAIN_CHANNEL_ID}>\n"
+            f"• THIRD: {third_in} (рек: `{reconnect_stats['third']}`)\n\n"
+            f"• egoist: {w_state(watcher_egoist)} (рек: `{reconnect_stats['egoist']}`)\n"
+            f"• egorik: {w_state(watcher_egorik)} (рек: `{reconnect_stats['egorik']}`)\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"**Команды:**\n"
+            f"`!on egoist` / `!off egoist`\n"
+            f"`!all on` / `!all off`\n"
+            f"`!afk` — режим AFK\n"
+            f"`!ping` — проверить задержку\n"
+            f"`!stats` — статистика\n"
+            f"`!log` `!chart` `!who` `!tgtest`\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"Uptime: `{h}ч {m}м {s}с`\n\n"
+            f"**📡 Пинг:**\n{get_latency_info()}"
+        )
+        await message.channel.send(panel)
+        total_messages_sent += 1
+        return
+
     if content == "!ping":
         start_ping = time.time()
         msg = await message.channel.send("🏓 Пингую узлы...")
@@ -622,41 +657,6 @@ async def on_message(message):
             f"• Egorik: `{reconnect_stats['egorik']}` раз\n"
         )
         await message.channel.send(stats_text)
-        total_messages_sent += 1
-        return
-
-    if content == "!status":
-        def w_state(w):
-            if not w: return "❌ нет"
-            if w.disabled: return "🔴 выключен"
-            afk = "💤 [AFK]" if getattr(w.client, 'is_afk', False) else ""
-            return f"🟢 ручной {afk}" if w.manual_mode else f"⚙️ авто {afk}"
-
-        third_vc = third_client.voice_clients[0] if third_client.voice_clients else None
-        third_in = "🟢 в войсе" if (third_vc and third_vc.is_connected()) else "🔴 нет"
-        uptime = int(time.time() - start_time)
-        h, m, s = uptime // 3600, (uptime % 3600) // 60, uptime % 60
-
-        panel = (
-            f"🎛 **ПАНЕЛЬ УПРАВЛЕНИЯ (THIRD)**\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"• Канал: <#{MAIN_CHANNEL_ID}>\n"
-            f"• THIRD: {third_in} (рек: `{reconnect_stats['third']}`)\n\n"
-            f"• egoist: {w_state(watcher_egoist)} (рек: `{reconnect_stats['egoist']}`)\n"
-            f"• egorik: {w_state(watcher_egorik)} (рек: `{reconnect_stats['egorik']}`)\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"**Команды:**\n"
-            f"`!on egoist` / `!off egoist`\n"
-            f"`!all on` / `!all off`\n"
-            f"`!afk` — режим AFK\n"
-            f"`!ping` — проверить задержку\n"
-            f"`!stats` — статистика\n"
-            f"`!status` `!log` `!chart` `!who` `!tgtest`\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"Uptime: `{h}ч {m}м {s}с`\n\n"
-            f"**📡 Пинг:**\n{get_latency_info()}"
-        )
-        await message.channel.send(panel)
         total_messages_sent += 1
         return
 
