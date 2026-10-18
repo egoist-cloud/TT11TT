@@ -1,4 +1,4 @@
-discord.py-self==2.1.0
+git+https://github.com/dolfies/discord.py-self@master
 aiohttp
 PyNaCl
 brotli
