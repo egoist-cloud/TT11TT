@@ -15,7 +15,7 @@ import threading
 import traceback
 
 # ====================================================
-# ЛОГИРОВАНИЕ (Выводит всё в консоль Render)
+# ЛОГИРОВАНИЕ
 # ====================================================
 logging.basicConfig(
     level=logging.INFO,
@@ -29,24 +29,21 @@ log = logging.getLogger(__name__)
 # ====================================================
 def get_env_int(name, default=0):
     val = os.getenv(name)
-    if not val:
-        if default == 0:
-            log.error(f"❌ КРИТИЧЕСКАЯ ОШИБКА: Переменная {name} не задана в Render!")
-        return default
+    if not val: return default
+    val = str(val).strip().replace('"', '').replace("'", "")
     try:
         return int(val)
     except ValueError:
-        log.error(f"❌ КРИТИЧЕСКАЯ ОШИБКА: Переменная {name} должна быть числом, а не '{val}'!")
+        log.error(f"❌ ОШИБКА: Переменная {name} должна быть числом, а не '{val}'!")
         return default
 
 def get_env_str(name):
     val = os.getenv(name)
-    if not val:
-        log.warning(f"⚠️ Внимание: Переменная {name} не задана.")
-    return val
+    return val.strip() if val else None
 
 log.info("=" * 50)
 log.info("ЗАГРУЗКА ПЕРЕМЕННЫХ ОКРУЖЕНИЯ:")
+
 TOKEN_MAIN = get_env_str("DISCORD_TOKEN_1")
 TOKEN_SECOND = get_env_str("DISCORD_TOKEN_4")
 MAIN_CHANNEL_ID = get_env_int("VOICE_CHANNEL_ID")
@@ -61,11 +58,11 @@ MAIN_BOT_USER_ID = get_env_int("MAIN_BOT_USER_ID", 1241012523952508978)
 RENDER_URL = get_env_str("RENDER_URL") or "https://tt11tt.onrender.com"
 TELEGRAM_TOKEN = get_env_str("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = get_env_str("TELEGRAM_CHAT_ID")
-log.info("=" * 50)
 
-if MAIN_CHANNEL_ID == 0:
-    log.error("❌ Бот не может запуститься без VOICE_CHANNEL_ID. Проверьте Environment в Render.")
-    sys.exit(1) # Принудительно завершаем, чтобы Render показал ошибку
+log.info(f"  MAIN_CHANNEL_ID: {MAIN_CHANNEL_ID}")
+log.info(f"  USER_ID_EGOIST: {USER_ID_EGOIST}")
+log.info(f"  USER_ID_EGORIK: {USER_ID_EGORIK}")
+log.info("=" * 50)
 
 # ====================================================
 # КОНСТАНТЫ
@@ -93,7 +90,7 @@ reconnect_history = {k: deque(maxlen=200) for k in reconnect_stats}
 event_log = deque(maxlen=30)
 
 # ====================================================
-# ВЕБ-СЕРВЕР (Обязателен для Render!)
+# ВЕБ-СЕРВЕР (Для Render Health Check)
 # ====================================================
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -165,11 +162,8 @@ class Watcher:
         self.user_id = user_id
         self.name = name
         
-        intents = discord.Intents.default()
-        intents.presences = True
-        intents.members = True
-        
-        self.client = discord.Client(intents=intents)
+        # ВАЖНО: Убрали Intents, так как discord.py-self их не поддерживает
+        self.client = discord.Client()
         self.client.is_afk = False
         
         self.is_reconnecting = False
@@ -256,7 +250,7 @@ class Watcher:
                     await self.connect(MAIN_CHANNEL_ID)
 
     async def connect(self, channel_id):
-        if self.is_reconnecting or self.disabled: return
+        if self.is_reconnecting or self.disabled or channel_id == 0: return
         self.is_reconnecting = True
         try:
             channel = self.client.get_channel(channel_id)
@@ -285,7 +279,6 @@ class Watcher:
             await self.client.start(self.token)
         except Exception as e:
             log.error(f"❌ [{self.name}] Ошибка запуска (возможно, неверный токен): {e}")
-            raise e # Пробрасываем ошибку, чтобы Render показал её в логах
 
 # ====================================================
 # MAIN и SECOND (Боты)
@@ -295,7 +288,7 @@ main_reconnecting = False
 
 async def ensure_main_connected():
     global main_reconnecting
-    if main_reconnecting: return
+    if main_reconnecting or MAIN_CHANNEL_ID == 0: return
     main_reconnecting = True
     try:
         channel = main_client.get_channel(MAIN_CHANNEL_ID)
@@ -338,7 +331,7 @@ second_reconnecting = False
 
 async def ensure_second_connected():
     global second_reconnecting
-    if second_reconnecting: return
+    if second_reconnecting or MAIN_CHANNEL_ID == 0: return
     second_reconnecting = True
     try:
         channel = second_client.get_channel(MAIN_CHANNEL_ID)
@@ -457,7 +450,6 @@ async def main():
 
     tasks = []
     
-    # Безопасно добавляем задачи
     if TOKEN_MAIN: tasks.append(main_client.start(TOKEN_MAIN))
     if TOKEN_EGOIST: tasks.append(watcher_egoist.start())
     if TOKEN_EGORIK: tasks.append(watcher_egorik.start())
@@ -465,10 +457,9 @@ async def main():
 
     if not tasks:
         log.error("❌ Ни один токен не задан! Проверь Environment Variables.")
-        sys.exit(1)
+        return
 
     log.info("Запуск всех ботов...")
-    # gather запускает всех одновременно. Если кто-то падает, остальные продолжают работать.
     await asyncio.gather(*tasks, return_exceptions=True)
 
 if __name__ == "__main__":
