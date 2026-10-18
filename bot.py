@@ -1,5 +1,5 @@
 # ====================================================
-# TT11TT — Управляющий (Main) + Дежурные (Строго по команде)
+# TT11TT — Управляющий (Main) + Дежурные (Автовозврат)
 # ====================================================
 import os
 import sys
@@ -58,7 +58,7 @@ def get_env_bool(name, default=False):
     return val.lower() in ("1", "true", "yes", "on")
 
 # --- ТОКЕНЫ ---
-TOKEN_MAIN = get_env_str("DISCORD_TOKEN_1")     # Управляющий (активен, в войс не заходит)
+TOKEN_MAIN = get_env_str("DISCORD_TOKEN_1")     # Управляющий
 TOKEN_EGOIST = get_env_str("DISCORD_TOKEN_2")   # Дежурный 1
 TOKEN_EGORIK = get_env_str("DISCORD_TOKEN_3")   # Дежурный 2
 
@@ -78,7 +78,6 @@ STATUS_ROTATION = get_env_bool("STATUS_ROTATION", True)
 log.info("=" * 50)
 log.info("Управляющий (Main) + Дежурные (Egoist, Egorik)")
 log.info("Канал: %s | Гильдия: %s", MAIN_CHANNEL_ID, GUILD_ID or "все")
-log.info("ВСЕ БОТЫ СИДЯТ В СЕТИ И НЕ ЗАХОДЯТ В ВОЙС САМИ")
 log.info("=" * 50)
 
 # ====================================================
@@ -87,8 +86,8 @@ log.info("=" * 50)
 DEAD_SOCKET_TIMEOUT = 900
 DEAD_SOCKET_CRITICAL = 3600
 CONNECT_TIMEOUT = 60.0
-RECONNECT_MIN_DELAY = 2.0
-RECONNECT_MAX_DELAY = 8.0
+RECONNECT_MIN_DELAY = 3.0
+RECONNECT_MAX_DELAY = 10.0
 MESSAGE_DELETE_DELAY = 15 * 60 # 15 минут
 
 GAMES_POOL = [
@@ -161,15 +160,12 @@ async def send_telegram(text: str):
         log.warning("TG: ошибка отправки: %s", e)
 
 async def auto_delete_message(msg, delay=MESSAGE_DELETE_DELAY):
-    """Удаляет сообщение спустя указанное время (по умолчанию 15 минут)."""
     await asyncio.sleep(delay)
-    try:
-        await msg.delete()
-    except Exception:
-        pass
+    try: await msg.delete()
+    except Exception: pass
 
 # ====================================================
-# СМЕНА СТАТУСА (Прикрытие)
+# СМЕНА СТАТУСА
 # ====================================================
 async def status_changer(client, name):
     if not STATUS_ROTATION: return
@@ -197,8 +193,7 @@ async def status_changer(client, name):
             log.warning("[%s] ошибка статуса: %s", name, e)
         try:
             await asyncio.wait_for(_shutdown_event.wait(), timeout=3600 + random.uniform(0, 300))
-        except asyncio.TimeoutError:
-            pass
+        except asyncio.TimeoutError: pass
 
 # ====================================================
 # ДЕЖУРНЫЕ (WATCHERS)
@@ -211,7 +206,7 @@ class Watcher:
         self.client = discord.Client(chunk_guilds_at_startup=False)
         self.client.is_afk = False
         self.manual_mode = False
-        self.disabled = True # Строго выключен по умолчанию
+        self.disabled = True
         self._started = set()
         self._connect_lock = None
         self._register_events()
@@ -224,9 +219,9 @@ class Watcher:
     def _register_events(self):
         @self.client.event
         async def on_ready():
-            log.info("[%s] авторизован как %s (В сети, в войс не заходит)", self.name, self.client.user)
+            log.info("[%s] авторизован как %s (В сети)", self.name, self.client.user)
+            self._task_once("watchdog", self.watchdog()) # Запускаем сторожевой таймер
             self._task_once("status", status_changer(self.client, self.name))
-            # Watchdog-и для автоматического захода ОТКЛЮЧЕНЫ
             
         @self.client.event
         async def on_socket_event_type(event_type):
@@ -239,37 +234,65 @@ class Watcher:
             me = self.client.user
             if me is None: return
             
-            # Если бот вылетел из канала (кик/ошибка) и он ДОЛЖЕН быть в войсе по команде !on
+            # Если кикнули или вылетели
             if member.id == me.id:
                 if self.disabled or not self.manual_mode: return
                 if not after.channel or after.channel.id != MAIN_CHANNEL_ID:
-                    log.warning("[%s] бот вылетел, возвращаю...", self.name)
+                    log.warning("[%s] бот вылетел/кикнут, возвращаю...", self.name)
                     log_reconnect(self.name.lower())
                     await asyncio.sleep(random.uniform(RECONNECT_MIN_DELAY, RECONNECT_MAX_DELAY))
                     if self.manual_mode and not self.disabled:
                         await self.connect(MAIN_CHANNEL_ID)
 
+    async def watchdog(self):
+        """Сторожевой таймер: проверяет, должен ли бот быть в канале."""
+        while not _shutdown_event.is_set():
+            await asyncio.sleep(5) # Проверяем каждые 5 секунд
+            if self.disabled or not self.manual_mode:
+                continue
+            
+            # Если бот включен, но его нет в нужном канале
+            if (not self.client.voice_clients 
+                or not self.client.voice_clients[0].is_connected() 
+                or self.client.voice_clients[0].channel.id != MAIN_CHANNEL_ID):
+                
+                log.warning("[%s] Обнаружено отключение от войса. Возвращаю...", self.name)
+                log_reconnect(self.name.lower())
+                await self.connect(MAIN_CHANNEL_ID)
+
     async def connect(self, channel_id):
         if self._connect_lock is None: self._connect_lock = asyncio.Lock()
         async with self._connect_lock:
-            if self.disabled or channel_id == 0: return
+            if self.disabled or channel_id == 0: return False, "Отключен"
             try:
                 channel = self.client.get_channel(channel_id)
                 if not channel:
-                    try: channel = await self.client.fetch_channel(channel_id)
-                    except Exception:
-                        log.warning("[%s] канал %s не найден", self.name, channel_id)
-                        return
+                    try: 
+                        channel = await self.client.fetch_channel(channel_id)
+                    except Exception as e:
+                        log.error(f"[{self.name}] ОШИБКА ПОИСКА КАНАЛА: {e}")
+                        return False, f"Канал не найден: {e}"
+                
                 if (self.client.voice_clients and self.client.voice_clients[0].is_connected() and self.client.voice_clients[0].channel.id == channel_id):
-                    return
+                    return True, "Уже в канале"
+                    
                 if self.client.voice_clients:
-                    try: await self.client.voice_clients[0].disconnect(force=True)
-                    except Exception: pass
+                    try: 
+                        await self.client.voice_clients[0].disconnect(force=True)
+                    except Exception as e: 
+                        log.warning(f"[{self.name}] Ошибка при отключении: {e}")
                     await asyncio.sleep(1)
+                    
                 await channel.connect(timeout=CONNECT_TIMEOUT, self_deaf=False, self_mute=False)
-                log.info("[%s] подключен к %s (по команде)", self.name, channel.name)
-            except asyncio.TimeoutError: log.warning("[%s] таймаут подключения к %s", self.name, channel_id)
-            except Exception as e: log.warning("[%s] ошибка подключения: %s", self.name, e)
+                log.info("[%s] подключен к %s (по команде или авто)", self.name, channel.name)
+                return True, "Успешно"
+                
+            except asyncio.TimeoutError:
+                log.error(f"[{self.name}] ОШИБКА ПОДКЛЮЧЕНИЯ: Таймаут")
+                return False, "Таймаут подключения (60 сек)"
+            except Exception as e:
+                log.error(f"[{self.name}] КРИТИЧЕСКАЯ ОШИБКА ПОДКЛЮЧЕНИЯ: {e}")
+                return False, str(e)
 
     async def disconnect(self):
         if self.client.voice_clients:
@@ -305,7 +328,7 @@ class Watcher:
 # ====================================================
 @main_client.event
 async def on_ready():
-    log.info("[MAIN] Управляющий бот запущен под прикрытием как %s (В сеть, в войс не заходит)", main_client.user)
+    log.info("[MAIN] Управляющий бот запущен под прикрытием как %s", main_client.user)
     if STATUS_ROTATION:
         main_client.loop.create_task(status_changer(main_client, "MAIN"))
     await send_telegram(f"👑 <b>Управляющий (Main) запущен</b>\nАптайм: <code>{tg_escape(fmt_uptime())}</code>")
@@ -316,12 +339,10 @@ async def on_message(message):
     if message.author.id == main_client.user.id: return
     if not isinstance(message.channel, discord.DMChannel): return
     
-    # Проверка, что пишет именно хозяин
     if message.author.id not in (MANAGER_USER_ID, USER_ID_EGOIST, USER_ID_EGORIK): return
 
     content = message.content.strip().lower()
 
-    # --- ПАНЕЛЬ ---
     if content in ("!status", "!panel", "!menu"):
         def w_state(w):
             if not w: return "❌ нет"
@@ -345,7 +366,6 @@ async def on_message(message):
         main_client.loop.create_task(auto_delete_message(msg, MESSAGE_DELETE_DELAY))
         return
 
-    # --- ПИНГ ---
     if content == "!ping":
         msg = await message.channel.send("🏓 Пингую...")
         ws_ping = int(main_client.latency * 1000)
@@ -353,19 +373,19 @@ async def on_message(message):
         main_client.loop.create_task(auto_delete_message(msg, MESSAGE_DELETE_DELAY))
         return
 
-    # --- ALL ON ---
     if content == "!all on":
         for w in (watcher_egoist, watcher_egorik):
             if w:
                 w.disabled = False
                 w.manual_mode = True
                 w.client.is_afk = False
-                await w.connect(MAIN_CHANNEL_ID)
-        msg = await message.channel.send("✅ Все дежурные включены и заходят в войс.\n*(удалится через 15 минут)*")
+                success, err = await w.connect(MAIN_CHANNEL_ID)
+                if not success:
+                    await message.channel.send(f"⚠️ {w.name} не смог зайти: {err}")
+        msg = await message.channel.send("✅ Команда выполнена для всех.\n*(удалится через 15 минут)*")
         main_client.loop.create_task(auto_delete_message(msg, MESSAGE_DELETE_DELAY))
         return
 
-    # --- ALL OFF ---
     if content == "!all off":
         for w in (watcher_egoist, watcher_egorik):
             if w:
@@ -376,7 +396,6 @@ async def on_message(message):
         main_client.loop.create_task(auto_delete_message(msg, MESSAGE_DELETE_DELAY))
         return
 
-    # --- ON / OFF <target> ---
     parts = content.split()
     if len(parts) >= 2:
         cmd, target_name = parts[0], parts[1]
@@ -386,9 +405,16 @@ async def on_message(message):
                 w.disabled = False
                 w.manual_mode = True
                 w.client.is_afk = False
-                await w.connect(MAIN_CHANNEL_ID)
-                msg = await message.channel.send(f"✅ {target_name.capitalize()} включен и работает.\n*(удалится через 15 минут)*")
+                
+                success, err = await w.connect(MAIN_CHANNEL_ID)
+                
+                if success:
+                    msg = await message.channel.send(f"✅ {target_name.capitalize()} включен и работает.\n*(удалится через 15 минут)*")
+                else:
+                    msg = await message.channel.send(f"❌ Ошибка включения {target_name.capitalize()}:\n`{err}`")
+                
                 main_client.loop.create_task(auto_delete_message(msg, MESSAGE_DELETE_DELAY))
+                
             elif cmd == "!off":
                 w.manual_mode = False
                 w.disabled = True
@@ -408,12 +434,10 @@ async def main():
 
     tasks = []
     
-    # 1. Запускаем Main (Управляющий)
     if TOKEN_MAIN:
         tasks.append(main_client.start(TOKEN_MAIN))
         await asyncio.sleep(2)
     
-    # 2. Запускаем Дежурных (они авторизуются и сидят в сети)
     if watcher_egoist:
         tasks.append(watcher_egoist.start())
         await asyncio.sleep(2)
