@@ -1,5 +1,5 @@
 # ====================================================
-# TT11TT — Discord боты (Стабильная версия без ников)
+# TT11TT — Discord боты (Финальная версия)
 # ====================================================
 import os
 import sys
@@ -42,7 +42,6 @@ def get_env_int(name, default=0):
 def get_env_str(name):
     val = os.getenv(name)
     if not val: return None
-    # Убираем лишние пробелы и кавычки
     return val.strip().replace('"', '').replace("'", "")
 
 log.info("=" * 50)
@@ -75,7 +74,7 @@ log.info("=" * 50)
 # ====================================================
 # КОНСТАНТЫ
 # ====================================================
-STATUS_INTERVAL = 1800
+STATUS_INTERVAL = 3600
 DEAD_SOCKET_TIMEOUT = 600
 
 GAMES_POOL = [
@@ -266,7 +265,9 @@ class Watcher:
         @self.client.event
         async def on_presence_update(before, after):
             last_event_time[self.name.lower()] = time.time()
-            if GUILD_ID != 0 and after.guild and after.guild.id != GUILD_ID: return
+            # ЗАЩИТА ОТ ОШИБКИ RELATIONSHIP
+            if GUILD_ID != 0 and hasattr(after, 'guild') and after.guild and after.guild.id != GUILD_ID: 
+                return
             if self.disabled or self.manual_mode: return
             if after.id != self.user_id: return
 
