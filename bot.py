@@ -1,5 +1,5 @@
 # ====================================================
-# TT11TT — Discord боты (THIRD = управляющий)
+# TT11TT — Discord боты (Стабильная версия без ников)
 # ====================================================
 import os
 import sys
@@ -13,7 +13,6 @@ from collections import deque
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
 import traceback
-from datetime import datetime
 
 # ====================================================
 # ЛОГИРОВАНИЕ
@@ -43,7 +42,7 @@ def get_env_int(name, default=0):
 def get_env_str(name):
     val = os.getenv(name)
     if not val: return None
-    # Убираем лишние пробелы и кавычки, если они случайно скопировались
+    # Убираем лишние пробелы и кавычки
     return val.strip().replace('"', '').replace("'", "")
 
 log.info("=" * 50)
@@ -76,7 +75,7 @@ log.info("=" * 50)
 # ====================================================
 # КОНСТАНТЫ
 # ====================================================
-STATUS_INTERVAL = 3600  # 1 час
+STATUS_INTERVAL = 1800
 DEAD_SOCKET_TIMEOUT = 600
 
 GAMES_POOL = [
@@ -109,7 +108,7 @@ second_watchdogs_started = False
 third_watchdogs_started = False
 
 # ====================================================
-# ВЕБ-СЕРВЕР
+# ВЕБ-СЕРВЕР (для Render)
 # ====================================================
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -164,10 +163,6 @@ async def send_telegram(text: str):
     except Exception as e:
         log.warning(f"[TG] Ошибка отправки: {e}")
 
-async def alert_reconnect(name: str):
-    # Отключено, чтобы не спамить
-    pass
-
 async def uptime_pinger():
     await asyncio.sleep(60)
     while True:
@@ -215,7 +210,6 @@ async def status_changer(client, name):
     while True:
         try:
             if not getattr(client, 'is_afk', False):
-                await asyncio.sleep(random.randint(2, 10))
                 r = random.random()
                 if r < 0.4:
                     game = random.choice(GAMES_POOL)
@@ -233,30 +227,6 @@ async def status_changer(client, name):
         except Exception as e:
             log.warning(f"[{name}] Ошибка статуса: {e}")
         await asyncio.sleep(STATUS_INTERVAL)
-
-# ====================================================
-# АВТО-СМЕНА НИКОВ
-# ====================================================
-async def nickname_changer(client, name, original_name):
-    while True:
-        try:
-            guild = client.get_guild(GUILD_ID)
-            if guild:
-                current_hour = datetime.now().hour
-                if 0 <= current_hour < 8:
-                    new_nick = f"[zzZ] {original_name}"
-                elif 8 <= current_hour < 18:
-                    new_nick = f"[active] {original_name}"
-                else:
-                    new_nick = f"[chill] {original_name}"
-                
-                me = guild.me
-                if me and me.nick != new_nick:
-                    await me.edit(nick=new_nick)
-                    log.info(f"[{name}] Ник изменен на {new_nick}")
-        except Exception as e:
-            log.warning(f"[{name}] Ошибка смены ника: {e}")
-        await asyncio.sleep(3600)
 
 # ====================================================
 # НАБЛЮДАТЕЛИ (Дежурные)
@@ -515,7 +485,6 @@ async def on_ready():
         main_watchdogs_started = True
         main_client.loop.create_task(main_watchdog())
         main_client.loop.create_task(status_changer(main_client, "MAIN"))
-        main_client.loop.create_task(nickname_changer(main_client, "MAIN", "commback"))
         main_client.loop.create_task(uptime_pinger())
         main_client.loop.create_task(daily_report_task())
 
@@ -542,7 +511,6 @@ async def on_ready():
         second_watchdogs_started = True
         second_client.loop.create_task(second_watchdog())
         second_client.loop.create_task(status_changer(second_client, "SECOND"))
-        second_client.loop.create_task(nickname_changer(second_client, "SECOND", "second"))
 
 @second_client.event
 async def on_socket_event_type(event_type):
@@ -569,7 +537,6 @@ async def on_ready():
         third_watchdogs_started = True
         third_client.loop.create_task(third_watchdog())
         third_client.loop.create_task(status_changer(third_client, "THIRD"))
-        third_client.loop.create_task(nickname_changer(third_client, "THIRD", "third"))
     
     await send_dm_notification(USER_ID_EGOIST, "✅ Управляющий бот (THIRD) запущен.")
     await send_telegram("✅ <b>TT11TT (THIRD) запущен</b> на Render.")
