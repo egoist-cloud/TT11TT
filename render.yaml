@@ -5,28 +5,4 @@ services:
     plan: free
     buildCommand: "apt-get update && apt-get install -y ffmpeg && pip install -r requirements.txt"
     startCommand: "python bot.py"
-    envVars:
-      - key: PYTHON_VERSION
-        value: 3.12.7
-      - key: DISCORD_TOKEN_1
-        sync: false
-      - key: DISCORD_TOKEN_2
-        sync: false
-      - key: DISCORD_TOKEN_3
-        sync: false
-      - key: DISCORD_TOKEN_4
-        sync: false
-      - key: VOICE_CHANNEL_ID
-        sync: false
-      - key: USER_ID_1
-        sync: false
-      - key: USER_ID_2
-        sync: false
-      - key: MAIN_BOT_USER_ID
-        sync: false
-      - key: RENDER_URL
-        sync: false
-      - key: TELEGRAM_TOKEN
-        sync: false
-      - key: TELEGRAM_CHAT_ID
-        sync: false
+# ... остальные переменные ...
