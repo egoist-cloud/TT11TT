@@ -73,7 +73,7 @@ GUILD_ID = get_env_int("GUILD_ID")
 RENDER_URL = get_env_str("RENDER_URL") or "https://tt11tt.onrender.com"
 TELEGRAM_TOKEN = get_env_str("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = get_env_str("TELEGRAM_CHAT_ID")
-STATUS_ROTATION = get_env_bool("STATUS_ROTATION", True) # По умолчанию вкл для прикрытия
+STATUS_ROTATION = get_env_bool("STATUS_ROTATION", True)
 
 log.info("=" * 50)
 log.info("Управляющий (Main) + Дежурные (Egoist, Egorik)")
