@@ -220,7 +220,7 @@ class Watcher:
         @self.client.event
         async def on_ready():
             log.info("[%s] авторизован как %s (В сети)", self.name, self.client.user)
-            self._task_once("watchdog", self.watchdog()) # Запускаем сторожевой таймер
+            self._task_once("watchdog", self.watchdog())
             self._task_once("status", status_changer(self.client, self.name))
             
         @self.client.event
@@ -234,7 +234,6 @@ class Watcher:
             me = self.client.user
             if me is None: return
             
-            # Если кикнули или вылетели
             if member.id == me.id:
                 if self.disabled or not self.manual_mode: return
                 if not after.channel or after.channel.id != MAIN_CHANNEL_ID:
@@ -245,13 +244,11 @@ class Watcher:
                         await self.connect(MAIN_CHANNEL_ID)
 
     async def watchdog(self):
-        """Сторожевой таймер: проверяет, должен ли бот быть в канале."""
         while not _shutdown_event.is_set():
-            await asyncio.sleep(5) # Проверяем каждые 5 секунд
+            await asyncio.sleep(5)
             if self.disabled or not self.manual_mode:
                 continue
             
-            # Если бот включен, но его нет в нужном канале
             if (not self.client.voice_clients 
                 or not self.client.voice_clients[0].is_connected() 
                 or self.client.voice_clients[0].channel.id != MAIN_CHANNEL_ID):
@@ -284,7 +281,7 @@ class Watcher:
                     await asyncio.sleep(1)
                     
                 await channel.connect(timeout=CONNECT_TIMEOUT, self_deaf=False, self_mute=False)
-                log.info("[%s] подключен к %s (по команде или авто)", self.name, channel.name)
+                log.info("[%s] подключен к %s", self.name, channel.name)
                 return True, "Успешно"
                 
             except asyncio.TimeoutError:
