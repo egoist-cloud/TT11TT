@@ -42,14 +42,16 @@ def get_env_int(name, default=0):
 
 def get_env_str(name):
     val = os.getenv(name)
-    return val.strip() if val else None
+    if not val: return None
+    # Убираем лишние пробелы и кавычки, если они случайно скопировались
+    return val.strip().replace('"', '').replace("'", "")
 
 log.info("=" * 50)
 log.info("ЗАГРУЗКА ПЕРЕМЕННЫХ ОКРУЖЕНИЯ:")
 
 TOKEN_MAIN = get_env_str("DISCORD_TOKEN_1")
 TOKEN_SECOND = get_env_str("DISCORD_TOKEN_4")
-TOKEN_THIRD = get_env_str("DISCORD_TOKEN_5") # <--- УПРАВЛЯЮЩИЙ БОТ
+TOKEN_THIRD = get_env_str("DISCORD_TOKEN_5") # УПРАВЛЯЮЩИЙ БОТ
 
 MAIN_CHANNEL_ID = get_env_int("VOICE_CHANNEL_ID")
 GUILD_ID = get_env_int("GUILD_ID")
@@ -74,10 +76,8 @@ log.info("=" * 50)
 # ====================================================
 # КОНСТАНТЫ
 # ====================================================
-STATUS_INTERVAL = 3600  # Увеличили до 1 часа (меньше подозрений)
+STATUS_INTERVAL = 3600  # 1 час
 DEAD_SOCKET_TIMEOUT = 600
-ACTION_DELAY_MIN = 2    # Мин. задержка перед действием (сек)
-ACTION_DELAY_MAX = 10   # Макс. задержка перед действием (сек)
 
 GAMES_POOL = [
     {"name": "Counter-Strike 2", "app_id": 730},
@@ -144,7 +144,6 @@ def log_reconnect(name: str):
 
 async def send_dm_notification(user_id, text):
     global total_messages_sent
-    # Используем THIRD-клиент для отправки уведомлений (он управляющий)
     if not third_client or not third_client.is_ready(): return
     try:
         user = await third_client.fetch_user(user_id)
@@ -166,11 +165,8 @@ async def send_telegram(text: str):
         log.warning(f"[TG] Ошибка отправки: {e}")
 
 async def alert_reconnect(name: str):
-    now = time.time()
-    recent = sum(1 for ts in reconnect_history[name] if ts >= now - 600)
-    if recent >= 3:
-        msg = (f"🚨 <b>Алерт!</b>\n{name}: {recent} реконнектов за 10 минут.\nПроверь токен и сеть.")
-        await send_telegram(msg)
+    # Отключено, чтобы не спамить
+    pass
 
 async def uptime_pinger():
     await asyncio.sleep(60)
@@ -213,15 +209,13 @@ def get_latency_info() -> str:
     return "\n".join(info) if info else "нет данных"
 
 # ====================================================
-# СМЕНА СТАТУСА (с задержкой)
+# СМЕНА СТАТУСА
 # ====================================================
 async def status_changer(client, name):
     while True:
         try:
             if not getattr(client, 'is_afk', False):
-                # Случайная задержка перед сменой статуса (маскировка)
-                await asyncio.sleep(random.randint(ACTION_DELAY_MIN, ACTION_DELAY_MAX))
-                
+                await asyncio.sleep(random.randint(2, 10))
                 r = random.random()
                 if r < 0.4:
                     game = random.choice(GAMES_POOL)
@@ -265,7 +259,7 @@ async def nickname_changer(client, name, original_name):
         await asyncio.sleep(3600)
 
 # ====================================================
-# НАБЛЮДАТЕЛИ (Selfbot) — без изменений
+# НАБЛЮДАТЕЛИ (Дежурные)
 # ====================================================
 class Watcher:
     def __init__(self, token, user_id, name):
@@ -420,7 +414,7 @@ class Watcher:
                     log.error(f"❌ [{self.name}] Cloudflare 429. Жду 60 секунд...")
                     await asyncio.sleep(60)
                     continue
-                log.error(f"❌ [{self.name}] HTTP ошибка {e.status}. Рестарт через 30 сек.")
+                log.error(f"❌ [{self.name}] Ошибка токена или HTTP {e.status}. Рестарт через 30 сек.")
                 await asyncio.sleep(30)
             except Exception as e:
                 log.error(f"❌ [{self.name}] Ошибка: {e}. Рестарт через 30 сек.")
@@ -538,7 +532,6 @@ async def on_voice_state_update(member, before, after):
         log_reconnect("main")
         await asyncio.sleep(2)
         await ensure_main_connected()
-        await alert_reconnect("main")
 
 @second_client.event
 async def on_ready():
@@ -565,7 +558,7 @@ async def on_voice_state_update(member, before, after):
         await ensure_second_connected()
 
 # ====================================================
-# THIRD — УПРАВЛЯЮЩИЙ БОТ (принимает команды)
+# THIRD — УПРАВЛЯЮЩИЙ БОТ
 # ====================================================
 @third_client.event
 async def on_ready():
@@ -578,7 +571,6 @@ async def on_ready():
         third_client.loop.create_task(status_changer(third_client, "THIRD"))
         third_client.loop.create_task(nickname_changer(third_client, "THIRD", "third"))
     
-    # Отправляем уведомление о запуске от имени THIRD
     await send_dm_notification(USER_ID_EGOIST, "✅ Управляющий бот (THIRD) запущен.")
     await send_telegram("✅ <b>TT11TT (THIRD) запущен</b> на Render.")
 
@@ -595,19 +587,16 @@ async def on_voice_state_update(member, before, after):
         log_reconnect("third")
         await ensure_third_connected()
 
-# КОМАНДЫ ТЕПЕРЬ ОБРАБАТЫВАЮТСЯ THIRD-БОТОМ
 @third_client.event
 async def on_message(message):
     global total_messages_sent
     
     if message.author.id == third_client.user.id: return
     if not isinstance(message.channel, discord.DMChannel): return
-    # Разрешаем писать команды владельцам и THIRD-боту
     if message.author.id not in (USER_ID_EGOIST, USER_ID_EGORIK, MAIN_BOT_USER_ID, third_client.user.id): return
 
     content = message.content.strip().lower()
 
-    # УМНЫЙ ПИНГ
     if content == "!ping":
         start_ping = time.time()
         msg = await message.channel.send("🏓 Пингую узлы...")
@@ -647,7 +636,6 @@ async def on_message(message):
         await msg.edit(content=result_text)
         return
 
-    # СТАТИСТИКА
     if content == "!stats":
         uptime = int(time.time() - start_time)
         h, m, s = uptime // 3600, (uptime % 3600) // 60, uptime % 60
@@ -670,7 +658,6 @@ async def on_message(message):
         return
 
     if content == "!status":
-        # Строим панель от имени THIRD
         def w_state(w):
             if not w: return "❌ нет"
             if w.disabled: return "🔴 выключен"
@@ -809,7 +796,7 @@ async def safe_start(client, token, name):
                 log.error(f"❌ [{name}] Cloudflare 429. Жду 60 секунд...")
                 await asyncio.sleep(60)
                 continue
-            log.error(f"❌ [{name}] HTTP ошибка {e.status}. Рестарт через 30 сек.")
+            log.error(f"❌ [{name}] Ошибка токена или HTTP {e.status}. Рестарт через 30 сек.")
             await asyncio.sleep(30)
         except Exception as e:
             log.error(f"❌ [{name}] Ошибка: {e}. Рестарт через 30 сек.")
