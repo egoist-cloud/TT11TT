@@ -1,5 +1,5 @@
 # ====================================================
-# TT11TT — Бот под прикрытием (Main) + Дежурные
+# TT11TT — Управляющий (Main) + Дежурные (Строго по команде)
 # ====================================================
 import os
 import sys
@@ -58,7 +58,7 @@ def get_env_bool(name, default=False):
     return val.lower() in ("1", "true", "yes", "on")
 
 # --- ТОКЕНЫ ---
-TOKEN_MAIN = get_env_str("DISCORD_TOKEN_1")     # Управляющий (под прикрытием)
+TOKEN_MAIN = get_env_str("DISCORD_TOKEN_1")     # Управляющий (активен, в войс не заходит)
 TOKEN_EGOIST = get_env_str("DISCORD_TOKEN_2")   # Дежурный 1
 TOKEN_EGORIK = get_env_str("DISCORD_TOKEN_3")   # Дежурный 2
 
@@ -78,6 +78,7 @@ STATUS_ROTATION = get_env_bool("STATUS_ROTATION", True)
 log.info("=" * 50)
 log.info("Управляющий (Main) + Дежурные (Egoist, Egorik)")
 log.info("Канал: %s | Гильдия: %s", MAIN_CHANNEL_ID, GUILD_ID or "все")
+log.info("ВСЕ БОТЫ СИДЯТ В СЕТИ И НЕ ЗАХОДЯТ В ВОЙС САМИ")
 log.info("=" * 50)
 
 # ====================================================
@@ -220,7 +221,7 @@ class Watcher:
         self.client = discord.Client(intents=intents, chunk_guilds_at_startup=False)
         self.client.is_afk = False
         self.manual_mode = False
-        self.disabled = True # Изначально выключены, ждут команды !on
+        self.disabled = True # Строго выключен по умолчанию
         self._started = set()
         self._connect_lock = None
         self._register_events()
@@ -233,11 +234,10 @@ class Watcher:
     def _register_events(self):
         @self.client.event
         async def on_ready():
-            log.info("[%s] авторизован как %s (Ожидает команды)", self.name, self.client.user)
-            self._task_once("watchdog", self.watchdog())
-            self._task_once("dead", self.dead_socket_watchdog())
+            log.info("[%s] авторизован как %s (В сети, в войс не заходит)", self.name, self.client.user)
             self._task_once("status", status_changer(self.client, self.name))
-
+            # Watchdog-и для автоматического захода ОТКЛЮЧЕНЫ
+            
         @self.client.event
         async def on_socket_event_type(event_type):
             last_event_time[self.name.lower()] = time.time()
@@ -249,7 +249,7 @@ class Watcher:
             me = self.client.user
             if me is None: return
             
-            # Если бот вылетел из канала (кик/ошибка)
+            # Если бот вылетел из канала (кик/ошибка) и он ДОЛЖЕН быть в войсе по команде !on
             if member.id == me.id:
                 if self.disabled or not self.manual_mode: return
                 if not after.channel or after.channel.id != MAIN_CHANNEL_ID:
@@ -258,42 +258,6 @@ class Watcher:
                     await asyncio.sleep(random.uniform(RECONNECT_MIN_DELAY, RECONNECT_MAX_DELAY))
                     if self.manual_mode and not self.disabled:
                         await self.connect(MAIN_CHANNEL_ID)
-
-    async def watchdog(self):
-        while not _shutdown_event.is_set():
-            await asyncio.sleep(random.uniform(3, 7))
-            if self.disabled or not self.manual_mode: continue
-            # Проверяем, сидит ли владелец (хозяин аккаунта) в войсе
-            owner_in_vc = False
-            if self.user_id:
-                try:
-                    user = self.client.get_user(self.user_id)
-                    if user and user.voice and user.voice.channel:
-                        owner_in_vc = True
-                except Exception: pass
-            
-            # Если владелец не в войсе, а бот должен быть - проверяем и заходим
-            if not owner_in_vc:
-                if (not self.client.voice_clients or not self.client.voice_clients[0].is_connected() or self.client.voice_clients[0].channel.id != MAIN_CHANNEL_ID):
-                    log_reconnect(self.name.lower())
-                    await self.connect(MAIN_CHANNEL_ID)
-
-    async def dead_socket_watchdog(self):
-        while not _shutdown_event.is_set():
-            await asyncio.sleep(60)
-            silence = time.time() - last_event_time.get(self.name.lower(), time.time())
-            if silence > DEAD_SOCKET_CRITICAL:
-                log.critical("[%s] молчание %dс — возможно, токен мёртв.", self.name, int(silence))
-                continue
-            if silence > DEAD_SOCKET_TIMEOUT:
-                log.warning("[%s] мёртвый сокет (%dс), реконнект", self.name, int(silence))
-                log_reconnect(self.name.lower())
-                if self.client.voice_clients:
-                    try: await self.client.voice_clients[0].disconnect(force=True)
-                    except Exception: pass
-                await asyncio.sleep(random.uniform(RECONNECT_MIN_DELAY, RECONNECT_MAX_DELAY))
-                if self.manual_mode and not self.disabled:
-                    await self.connect(MAIN_CHANNEL_ID)
 
     async def connect(self, channel_id):
         if self._connect_lock is None: self._connect_lock = asyncio.Lock()
@@ -313,7 +277,7 @@ class Watcher:
                     except Exception: pass
                     await asyncio.sleep(1)
                 await channel.connect(timeout=CONNECT_TIMEOUT, self_deaf=False, self_mute=False)
-                log.info("[%s] подключен к %s", self.name, channel.name)
+                log.info("[%s] подключен к %s (по команде)", self.name, channel.name)
             except asyncio.TimeoutError: log.warning("[%s] таймаут подключения к %s", self.name, channel_id)
             except Exception as e: log.warning("[%s] ошибка подключения: %s", self.name, e)
 
@@ -322,6 +286,7 @@ class Watcher:
             try:
                 await self.client.voice_clients[0].disconnect(force=True)
                 self.client.is_afk = False
+                log.info("[%s] отключен от войса", self.name)
             except Exception: pass
 
     async def start(self):
@@ -350,7 +315,7 @@ class Watcher:
 # ====================================================
 @main_client.event
 async def on_ready():
-    log.info("[MAIN] Управляющий бот запущен под прикрытием как %s", main_client.user)
+    log.info("[MAIN] Управляющий бот запущен под прикрытием как %s (В сеть, в войс не заходит)", main_client.user)
     if STATUS_ROTATION:
         main_client.loop.create_task(status_changer(main_client, "MAIN"))
     await send_telegram(f"👑 <b>Управляющий (Main) запущен</b>\nАптайм: <code>{tg_escape(fmt_uptime())}</code>")
@@ -370,7 +335,7 @@ async def on_message(message):
     if content in ("!status", "!panel", "!menu"):
         def w_state(w):
             if not w: return "❌ нет"
-            if w.disabled: return "🔴 выключен"
+            if w.disabled: return "🔴 выключен (не в войсе)"
             return "🟢 РАБОТАЕТ (в войсе)" if w.manual_mode else "⚙️ авто"
 
         panel_text = (
@@ -453,12 +418,12 @@ async def main():
 
     tasks = []
     
-    # 1. Запускаем Main (Управляющий под прикрытием)
+    # 1. Запускаем Main (Управляющий)
     if TOKEN_MAIN:
         tasks.append(main_client.start(TOKEN_MAIN))
         await asyncio.sleep(2)
     
-    # 2. Запускаем Дежурных (они авторизуются, но сидят в режиме disabled=True)
+    # 2. Запускаем Дежурных (они авторизуются и сидят в сети)
     if watcher_egoist:
         tasks.append(watcher_egoist.start())
         await asyncio.sleep(2)
