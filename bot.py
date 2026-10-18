@@ -73,14 +73,12 @@ GUILD_ID = get_env_int("GUILD_ID")
 RENDER_URL = get_env_str("RENDER_URL") or "https://tt11tt.onrender.com"
 TELEGRAM_TOKEN = get_env_str("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = get_env_str("TELEGRAM_CHAT_ID")
-
-# По умолчанию FALSE - боты не будут менять статус на игры
-STATUS_ROTATION = get_env_bool("STATUS_ROTATION", False) 
+STATUS_ROTATION = get_env_bool("STATUS_ROTATION", False)
 
 log.info("=" * 50)
 log.info("Управляющий (Main) + Дежурные (Egoist, Egorik)")
 log.info("Канал: %s | Гильдия: %s", MAIN_CHANNEL_ID, GUILD_ID or "все")
-log.info("Статус-ротация: %s", "ВКЛ" if STATUS_ROTATION else "ВЫКЛ (не палимся)")
+log.info("Боты сидят в войсе до команды !off")
 log.info("=" * 50)
 
 # ====================================================
@@ -165,16 +163,13 @@ async def auto_delete_message(msg, delay=MESSAGE_DELETE_DELAY):
     except Exception: pass
 
 # ====================================================
-# СМЕНА СТАТУСА (Теперь по умолчанию ничего не ставит)
+# СМЕНА СТАТУСА
 # ====================================================
 async def status_changer(client, name):
-    # Если STATUS_ROTATION выключен (False), мы просто выходим и ничего не меняем
-    if not STATUS_ROTATION: 
-        return
+    if not STATUS_ROTATION: return
     while not _shutdown_event.is_set():
         try:
             if not getattr(client, "is_afk", False) and client.is_ready():
-                # Только если включено вручную в Render
                 game = random.choice(GAMES_POOL)
                 activity = discord.Activity(
                     type=discord.ActivityType.playing, name=game["name"],
@@ -237,11 +232,14 @@ class Watcher:
                         await self.connect(MAIN_CHANNEL_ID)
 
     async def watchdog(self):
+        """Сторожевой таймер: проверяет, должен ли бот быть в канале."""
         while not _shutdown_event.is_set():
             await asyncio.sleep(5)
+            # Если бот выключен командой !off, таймер ничего не делает
             if self.disabled or not self.manual_mode:
                 continue
             
+            # Если бот включен, но его физически нет в канале — заводим обратно
             if (not self.client.voice_clients 
                 or not self.client.voice_clients[0].is_connected() 
                 or self.client.voice_clients[0].channel.id != MAIN_CHANNEL_ID):
