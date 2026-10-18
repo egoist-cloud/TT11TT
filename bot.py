@@ -47,6 +47,7 @@ log.info("ЗАГРУЗКА ПЕРЕМЕННЫХ ОКРУЖЕНИЯ:")
 TOKEN_MAIN = get_env_str("DISCORD_TOKEN_1")
 TOKEN_SECOND = get_env_str("DISCORD_TOKEN_4")
 MAIN_CHANNEL_ID = get_env_int("VOICE_CHANNEL_ID")
+GUILD_ID = get_env_int("GUILD_ID")
 
 TOKEN_EGOIST = get_env_str("DISCORD_TOKEN_2")
 USER_ID_EGOIST = get_env_int("USER_ID_1")
@@ -60,6 +61,7 @@ TELEGRAM_TOKEN = get_env_str("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = get_env_str("TELEGRAM_CHAT_ID")
 
 log.info(f"  MAIN_CHANNEL_ID: {MAIN_CHANNEL_ID}")
+log.info(f"  GUILD_ID (Только этот сервер): {GUILD_ID}")
 log.info(f"  USER_ID_EGOIST: {USER_ID_EGOIST}")
 log.info(f"  USER_ID_EGORIK: {USER_ID_EGORIK}")
 log.info("=" * 50)
@@ -162,7 +164,7 @@ class Watcher:
         self.user_id = user_id
         self.name = name
         
-        # ВАЖНО: Убрали Intents, так как discord.py-self их не поддерживает
+        # Обычный клиент без лишних параметров, чтобы не было ошибок
         self.client = discord.Client()
         self.client.is_afk = False
         
@@ -186,6 +188,10 @@ class Watcher:
 
         @self.client.event
         async def on_presence_update(before, after):
+            # Фильтруем события только по нашему серверу (если GUILD_ID задан)
+            if GUILD_ID != 0 and after.guild and after.guild.id != GUILD_ID:
+                return
+                
             if self.disabled or self.manual_mode: return
             if after.id != self.user_id: return
 
@@ -202,6 +208,10 @@ class Watcher:
 
         @self.client.event
         async def on_voice_state_update(member, before, after):
+            # Фильтруем события только по нашему серверу
+            if GUILD_ID != 0 and member.guild.id != GUILD_ID:
+                return
+
             if member.id == self.client.user.id:
                 if self.disabled or not self.manual_mode: return
                 if not after.channel or after.channel.id != MAIN_CHANNEL_ID:
@@ -321,6 +331,8 @@ async def on_ready():
 
 @main_client.event
 async def on_voice_state_update(member, before, after):
+    if GUILD_ID != 0 and member.guild.id != GUILD_ID:
+        return
     if member.id != main_client.user.id: return
     if not after.channel or after.channel.id != MAIN_CHANNEL_ID:
         log_reconnect("main")
@@ -363,6 +375,8 @@ async def on_ready():
 
 @second_client.event
 async def on_voice_state_update(member, before, after):
+    if GUILD_ID != 0 and member.guild.id != GUILD_ID:
+        return
     if member.id != second_client.user.id: return
     if not after.channel or after.channel.id != MAIN_CHANNEL_ID:
         log_reconnect("second")
