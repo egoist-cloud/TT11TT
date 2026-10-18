@@ -103,21 +103,11 @@ TEXT_STATUSES = ["Commback", "TALENT 24/7", "На страже", "Сижу в в
 WATCHING_STATUSES = ["как вы играете", "на ваши сообщения", "за порядком"]
 
 # ====================================================
-# INTENTS
-# ====================================================
-intents = discord.Intents.default()
-intents.members = True
-intents.presences = True
-intents.message_content = True
-intents.guilds = True
-intents.voice_states = True
-
-# ====================================================
 # ГЛОБАЛЬНОЕ СОСТОЯНИЕ
 # ====================================================
 watcher_egoist = None
 watcher_egorik = None
-main_client = discord.Client(intents=intents, chunk_guilds_at_startup=False)
+main_client = discord.Client(chunk_guilds_at_startup=False)
 
 start_time = time.time()
 reconnect_stats = {"egoist": 0, "egorik": 0}
@@ -218,7 +208,7 @@ class Watcher:
         self.token = token
         self.user_id = user_id
         self.name = name
-        self.client = discord.Client(intents=intents, chunk_guilds_at_startup=False)
+        self.client = discord.Client(chunk_guilds_at_startup=False)
         self.client.is_afk = False
         self.manual_mode = False
         self.disabled = True # Строго выключен по умолчанию
