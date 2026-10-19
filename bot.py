@@ -1,5 +1,5 @@
 # ====================================================
-# TT11TT — Discord боты (v37 - Final: Dezhurnye in Voice)
+# TT11TT — Discord боты (v38 - Unmute Fix)
 # ====================================================
 import os
 import sys
@@ -79,8 +79,6 @@ MAIN_BOT_USER_ID = get_env_int("MAIN_BOT_USER_ID", 0)
 RENDER_URL = get_env_str("RENDER_URL") or "https://tt11tt-1.onrender.com"
 STATUS_ROTATION = get_env_bool("STATUS_ROTATION", False)
 SPAM_CHANNEL_ID = 1270672504582832150
-
-# ID канала для отчетов
 REPORT_CHANNEL_ID = 1241013075151425650
 
 # ====================================================
@@ -115,22 +113,13 @@ _UPPER = string.ascii_uppercase
 _DIGITS = string.digits
 _ALL = _LOWER + _UPPER + _DIGITS
 
-def _rand_letters(min_len=3, max_len=12):
-    return ''.join(random.choices(_LOWER, k=random.randint(min_len, max_len)))
-
+def _rand_letters(min_len=3, max_len=12): return ''.join(random.choices(_LOWER, k=random.randint(min_len, max_len)))
 def _rand_letters_mixed(min_len=3, max_len=12):
     pool = _LOWER + _LOWER + _LOWER + _UPPER
     return ''.join(random.choices(pool, k=random.randint(min_len, max_len)))
-
-def _rand_digits(min_len=1, max_len=8):
-    return ''.join(random.choices(_DIGITS, k=random.randint(min_len, max_len)))
-
-def _rand_mixed(min_len=5, max_len=15):
-    return ''.join(random.choices(_ALL, k=random.randint(min_len, max_len)))
-
-def _rand_gibberish_word():
-    return _rand_letters(random.randint(3, 9))
-
+def _rand_digits(min_len=1, max_len=8): return ''.join(random.choices(_DIGITS, k=random.randint(min_len, max_len)))
+def _rand_mixed(min_len=5, max_len=15): return ''.join(random.choices(_ALL, k=random.randint(min_len, max_len)))
+def _rand_gibberish_word(): return _rand_letters(random.randint(3, 9))
 def _rand_gibberish_phrase():
     n = random.randint(2, 5)
     return " ".join(_rand_gibberish_word() for _ in range(n))
@@ -146,8 +135,7 @@ def _generate_live_text_safe() -> str:
     try:
         t = _generate_live_text().strip()
         return t if t else _rand_letters()
-    except Exception:
-        return _rand_letters()
+    except Exception: return _rand_letters()
 
 # ====================================================
 # ГЛОБАЛЬНОЕ СОСТОЯНИЕ
@@ -202,8 +190,7 @@ third_client = discord.Client(chunk_guilds_at_startup=False)
 reserve_client = discord.Client(chunk_guilds_at_startup=False) if TOKEN_RESERVE else None
 
 _CLIENTS = {"main": main_client, "second": second_client, "third": third_client}
-if reserve_client is not None:
-    _CLIENTS["reserve"] = reserve_client
+if reserve_client is not None: _CLIENTS["reserve"] = reserve_client
 
 _LOCKS = {"main": _main_lock, "second": _second_lock, "third": _third_lock, "reserve": _reserve_lock}
 
@@ -309,13 +296,10 @@ def log_reconnect(name: str):
     log_event(f"реконнект {name} #{reconnect_stats[name]}")
 
 async def _send_report(client, text: str, client_name: str):
-    """Отправляет отчет в указанный канал"""
     try:
         channel = await _safe_get_channel(client, REPORT_CHANNEL_ID)
-        if channel:
-            await channel.send(f"⚠️ **БОТ `{client_name.upper()}` ВЫЛЕТЕЛ**\n{text}")
-    except Exception as e:
-        log.error("Не удалось отправить отчет: %s", e)
+        if channel: await channel.send(f"⚠️ **БОТ `{client_name.upper()}` ВЫЛЕТЕЛ**\n{text}")
+    except Exception as e: log.error("Не удалось отправить отчет: %s", e)
 
 async def uptime_pinger():
     await asyncio.sleep(60)
@@ -424,10 +408,8 @@ def _register_voice_drop(name: str, reason: str = ""):
     _consecutive_failures[name] = _consecutive_failures.get(name, 0) + 1
     _drops_by_hour[datetime.now().hour] += 1
     log_event(f"⚠️ {name} вылетел из войса ({reason or 'watchdog'})")
-    
     client = _get_client(name)
-    if client:
-        asyncio.ensure_future(_send_report(client, f"Причина: {reason or 'watchdog'}", name))
+    if client: asyncio.ensure_future(_send_report(client, f"Причина: {reason or 'watchdog'}", name))
 
 async def _log_voice_uptime_periodic():
     while not _shutdown_event.is_set():
@@ -582,6 +564,7 @@ class Watcher:
             if not guild: return
             me = guild.get_member(self.client.user.id)
             if me and me.voice and (me.voice.self_mute or me.voice.self_deaf):
+                # Отправляем команду на снятие мута
                 await guild.change_voice_state(channel=vc.channel, self_mute=False, self_deaf=False)
                 log.info("[%s] принудительно снят мут", self.name)
         except Exception as e:
@@ -653,6 +636,11 @@ class Watcher:
                 await channel.connect(timeout=CONNECT_TIMEOUT, self_deaf=False, self_mute=False)
                 log.info("[%s] подключен к %s (БЕЗ МУТА)", self.name, channel.name)
                 _register_voice_ok(self.key)
+                
+                # Принудительное снятие мута сразу после подключения (на всякий случай)
+                await asyncio.sleep(2)
+                await self._enforce_unmute()
+                
                 return True, "Успешно"
             except Exception as e:
                 return False, str(e)
