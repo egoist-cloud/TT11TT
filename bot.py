@@ -1,5 +1,5 @@
 # ====================================================
-# TT11TT — Discord боты (v36 - Final Fix)
+# TT11TT — Discord боты (v37 - Final: Dezhurnye in Voice)
 # ====================================================
 import os
 import sys
@@ -80,7 +80,7 @@ RENDER_URL = get_env_str("RENDER_URL") or "https://tt11tt-1.onrender.com"
 STATUS_ROTATION = get_env_bool("STATUS_ROTATION", False)
 SPAM_CHANNEL_ID = 1270672504582832150
 
-# ID канала для отчетов (тот, что вы указали)
+# ID канала для отчетов
 REPORT_CHANNEL_ID = 1241013075151425650
 
 # ====================================================
@@ -309,7 +309,7 @@ def log_reconnect(name: str):
     log_event(f"реконнект {name} #{reconnect_stats[name]}")
 
 async def _send_report(client, text: str, client_name: str):
-    """Отправляет отчет в указанный канал (а не в ЛС)"""
+    """Отправляет отчет в указанный канал"""
     try:
         channel = await _safe_get_channel(client, REPORT_CHANNEL_ID)
         if channel:
@@ -427,7 +427,6 @@ def _register_voice_drop(name: str, reason: str = ""):
     
     client = _get_client(name)
     if client:
-        # Отправляем отчет в указанный канал
         asyncio.ensure_future(_send_report(client, f"Причина: {reason or 'watchdog'}", name))
 
 async def _log_voice_uptime_periodic():
@@ -527,7 +526,7 @@ async def _full_client_restart(client_name: str):
     except Exception as e: log.error("[%s] full restart failed: %s", client_name, e)
 
 # ====================================================
-# WATCHER
+# WATCHER (ДЕЖУРНЫЕ - БЕЗ МУТА)
 # ====================================================
 class Watcher:
     def __init__(self, token, user_id, name):
@@ -563,10 +562,30 @@ class Watcher:
             me = self.client.user
             if me is None or member.id != me.id: return
             if not self.manual_mode or self.disabled: return
+            
+            # Если бота замутили, снимаем мут
+            if after.self_mute or after.self_deaf:
+                await asyncio.sleep(1)
+                await self._enforce_unmute()
+            
             if not after.channel or after.channel.id != MAIN_CHANNEL_ID:
                 log_reconnect(self.key)
                 await asyncio.sleep(2)
                 if self.manual_mode and not self.disabled: await self.connect(MAIN_CHANNEL_ID)
+
+    async def _enforce_unmute(self):
+        """Принудительно снимает мут с дежурного"""
+        try:
+            vc = self.client.voice_clients[0] if self.client.voice_clients else None
+            if not vc or not vc.is_connected() or not vc.channel: return
+            guild = vc.guild
+            if not guild: return
+            me = guild.get_member(self.client.user.id)
+            if me and me.voice and (me.voice.self_mute or me.voice.self_deaf):
+                await guild.change_voice_state(channel=vc.channel, self_mute=False, self_deaf=False)
+                log.info("[%s] принудительно снят мут", self.name)
+        except Exception as e:
+            log.debug("[%s] enforce_unmute: %s", self.name, e)
 
     def _start_watchdog(self):
         if self._watchdog_task is None or self._watchdog_task.done():
@@ -581,6 +600,10 @@ class Watcher:
             if _paused.get(self.key, False): continue
             if self.disabled or not self.manual_mode: continue
             if not self.client.is_ready() or not _client_ready.get(self.key, False): continue
+            
+            # Проверка на мут
+            await self._enforce_unmute()
+            
             if _is_dead_socket(self.client):
                 log_event(f"[{self.name}] dead socket")
                 _register_voice_drop(self.key, "dead-socket")
@@ -625,8 +648,10 @@ class Watcher:
                     try: await self.client.voice_clients[0].disconnect(force=True)
                     except Exception: pass
                     await asyncio.sleep(1)
-                await channel.connect(timeout=CONNECT_TIMEOUT, self_deaf=True, self_mute=True)
-                log.info("[%s] подключен к %s", self.name, channel.name)
+                
+                # ДЕЖУРНЫЕ ВХОДЯТ БЕЗ МУТА
+                await channel.connect(timeout=CONNECT_TIMEOUT, self_deaf=False, self_mute=False)
+                log.info("[%s] подключен к %s (БЕЗ МУТА)", self.name, channel.name)
                 _register_voice_ok(self.key)
                 return True, "Успешно"
             except Exception as e:
@@ -665,7 +690,7 @@ class Watcher:
             return False
 
 # ====================================================
-# 24/7 + RESERVE
+# 24/7 + RESERVE (В МУТЕ)
 # ====================================================
 async def _enforce_mute(client_name: str):
     client = _get_client(client_name)
@@ -782,9 +807,8 @@ def _bind_client_events(name, client):
         me = client.user
         if me is None or member.id != me.id: return
         if not after.channel or after.channel.id != MAIN_CHANNEL_ID:
-            # ОТЧЕТ ПРИ ВЫХОДЕ
             asyncio.ensure_future(_send_report(client, "Принудительный выход из канала (Voice State Update)", name))
-            await asyncio.sleep(5) # Ждем 5 сек перед переподключением!
+            await asyncio.sleep(5)
             await _ensure_connected(name)
             return
         if not after.self_mute or not after.self_deaf:
