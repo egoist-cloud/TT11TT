@@ -1,6 +1,7 @@
 # ====================================================
-# TT11TT — Discord боты (v30)
+# TT11TT — Discord боты (v31)
 # 3 x 24/7 + RESERVE + 2 watcher + dashboard + metrics
+# + БЕССМЫСЛЕННЫЙ ГЕНЕРАТОР ТЕКСТА
 # ====================================================
 import os
 import sys
@@ -113,9 +114,9 @@ RECONNECT_MAX_DELAY = 8.0
 DEAD_SOCKET_LATENCY_MS = 30_000
 DEAD_SOCKET_TIMEOUT = 900
 DEAD_SOCKET_CRITICAL = 3600
-FULL_RESTART_THRESHOLD = 3   # после N реконнектов подряд → полный restart
+FULL_RESTART_THRESHOLD = 3
 
-ALL_OFFLINE_RESTART_SEC = 120  # если ВСЕ offline > 2 мин → exit
+ALL_OFFLINE_RESTART_SEC = 120
 
 RECONNECT_GUARD_SEC = 5.0
 
@@ -134,6 +135,79 @@ WATCHING_STATUSES = ["как вы играете", "на ваши сообщен
 
 WRITE_COOLDOWN = 15.0
 MAX_WRITE_COUNT = 100
+
+# ====================================================
+# ГЕНЕРАТОР БЕССМЫСЛЕННОГО ТЕКСТА
+# ====================================================
+_LOWER = string.ascii_lowercase
+_UPPER = string.ascii_uppercase
+_DIGITS = string.digits
+_ALL = _LOWER + _UPPER + _DIGITS
+
+
+def _rand_letters(min_len=3, max_len=12):
+    """Случайные буквы: fjdkfj, qwe, asdfgh."""
+    return ''.join(random.choices(_LOWER, k=random.randint(min_len, max_len)))
+
+
+def _rand_letters_mixed(min_len=3, max_len=12):
+    """Случайные буквы с редким верхним регистром."""
+    pool = _LOWER + _LOWER + _LOWER + _UPPER  # 75% lower / 25% upper
+    return ''.join(random.choices(pool, k=random.randint(min_len, max_len)))
+
+
+def _rand_digits(min_len=1, max_len=8):
+    """Случайные цифры: 4821, 915390."""
+    return ''.join(random.choices(_DIGITS, k=random.randint(min_len, max_len)))
+
+
+def _rand_mixed(min_len=5, max_len=15):
+    """Смесь букв и цифр: k3j4h5, a1b2c3."""
+    return ''.join(random.choices(_ALL, k=random.randint(min_len, max_len)))
+
+
+def _rand_gibberish_word():
+    """Бессмысленное «слово» из букв: fjdkfj, sjdsjd, qwerty."""
+    return _rand_letters(random.randint(3, 9))
+
+
+def _rand_gibberish_phrase():
+    """Несколько «слов» через пробел: fjdfjdf sjdsjd sds."""
+    n = random.randint(2, 5)
+    return " ".join(_rand_gibberish_word() for _ in range(n))
+
+
+def _generate_live_text() -> str:
+    """
+    Бессмысленный текст — как будто человек на клавиатуре барабанит.
+    Без слов, без смысла, без эмодзи.
+    """
+    r = random.random()
+
+    # 50% — просто случайные буквы
+    if r < 0.50:
+        return _rand_letters_mixed()
+
+    # 25% — случайные цифры
+    if r < 0.75:
+        return _rand_digits()
+
+    # 20% — смесь букв и цифр
+    if r < 0.95:
+        return _rand_mixed()
+
+    # 5% — несколько «слов» через пробел
+    return _rand_gibberish_phrase()
+
+
+def _generate_live_text_safe() -> str:
+    """Обёртка: гарантированно не пустая строка."""
+    try:
+        t = _generate_live_text().strip()
+        return t if t else _rand_letters()
+    except Exception:
+        return _rand_letters()
+
 
 # ====================================================
 # ГЛОБАЛЬНОЕ СОСТОЯНИЕ
@@ -160,22 +234,12 @@ _warmup_done = {k: False for k in ALL_KEYS}
 _channel_not_found = {k: 0 for k in ALL_KEYS}
 _channel_backoff = {k: CHANNEL_NOT_FOUND_BACKOFF_MIN for k in ALL_KEYS}
 
-# Пауза watchdog
 _paused = {k: False for k in ALL_KEYS}
-
-# Consecutive реконнекты → full restart
 _consecutive_failures = {k: 0 for k in ALL_KEYS}
-
-# Latency history
 _latency_history = {k: deque(maxlen=LATENCY_HISTORY_SIZE) for k in ALL_KEYS}
-
-# Drops by hour
 _drops_by_hour = {h: 0 for h in range(24)}
-
-# Blacklist
 _blacklist = set()
 
-# Reserve
 reserve_manual_enabled = True
 
 total_messages_sent = 0
@@ -684,7 +748,6 @@ async def _warmup_guild(client_name: str):
 # FULL CLIENT RESTART
 # ====================================================
 async def _full_client_restart(client_name: str):
-    """Полный перезапуск клиента при dead-socket или N реконнектах подряд."""
     client = _get_client(client_name)
     token = _get_token(client_name)
     if client is None or not token:
@@ -877,16 +940,21 @@ class Watcher:
                 delay = min(delay * 2, 600)
 
     async def spam_messages(self, channel_id, count):
+        """Отправляет count бессмысленных сообщений в канал."""
         global total_messages_sent
         try:
             channel = await _safe_get_channel(self.client, channel_id)
             if not channel:
                 return False
+
             for _ in range(count):
-                await channel.send(''.join(random.choices(string.digits, k=6)))
+                text = _generate_live_text_safe()
+                await channel.send(text)
                 total_messages_sent += 1
-                await asyncio.sleep(2.0)
-            log.info("[%s] Отправил %d сообщений", self.name, count)
+                # Человеческая задержка: 1.2–3.5 сек
+                await asyncio.sleep(random.uniform(1.2, 3.5))
+
+            log.info("[%s] Отправил %d бессмысленных сообщений", self.name, count)
             return True
         except Exception as e:
             log.error("[%s] Ошибка спама: %s", self.name, e)
@@ -1542,14 +1610,6 @@ async def on_message(message):
             await message.channel.send(f"🚫 Добавлен в blacklist: `{uid}`")
         except ValueError:
             await message.channel.send("⚠️ Использование: `!blacklist <user_id>` / `list` / `remove <id>`")
-        return
-
-    # --- !reload ---
-    if low == "!reload":
-        await message.channel.send(
-            "ℹ️ Перечитать env без редеплоя нельзя (Render фиксирует env при старте). "
-            "Используйте Manual Deploy."
-        )
         return
 
     # --- дежурные ---
