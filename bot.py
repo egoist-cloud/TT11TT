@@ -1,7 +1,6 @@
 # ====================================================
-# TT11TT — Discord боты (v31)
+# TT11TT — Discord боты (v32)
 # 3 x 24/7 + RESERVE + 2 watcher + dashboard + metrics
-# + БЕССМЫСЛЕННЫЙ ГЕНЕРАТОР ТЕКСТА
 # ====================================================
 import os
 import sys
@@ -146,62 +145,43 @@ _ALL = _LOWER + _UPPER + _DIGITS
 
 
 def _rand_letters(min_len=3, max_len=12):
-    """Случайные буквы: fjdkfj, qwe, asdfgh."""
     return ''.join(random.choices(_LOWER, k=random.randint(min_len, max_len)))
 
 
 def _rand_letters_mixed(min_len=3, max_len=12):
-    """Случайные буквы с редким верхним регистром."""
-    pool = _LOWER + _LOWER + _LOWER + _UPPER  # 75% lower / 25% upper
+    pool = _LOWER + _LOWER + _LOWER + _UPPER
     return ''.join(random.choices(pool, k=random.randint(min_len, max_len)))
 
 
 def _rand_digits(min_len=1, max_len=8):
-    """Случайные цифры: 4821, 915390."""
     return ''.join(random.choices(_DIGITS, k=random.randint(min_len, max_len)))
 
 
 def _rand_mixed(min_len=5, max_len=15):
-    """Смесь букв и цифр: k3j4h5, a1b2c3."""
     return ''.join(random.choices(_ALL, k=random.randint(min_len, max_len)))
 
 
 def _rand_gibberish_word():
-    """Бессмысленное «слово» из букв: fjdkfj, sjdsjd, qwerty."""
     return _rand_letters(random.randint(3, 9))
 
 
 def _rand_gibberish_phrase():
-    """Несколько «слов» через пробел: fjdfjdf sjdsjd sds."""
     n = random.randint(2, 5)
     return " ".join(_rand_gibberish_word() for _ in range(n))
 
 
 def _generate_live_text() -> str:
-    """
-    Бессмысленный текст — как будто человек на клавиатуре барабанит.
-    Без слов, без смысла, без эмодзи.
-    """
     r = random.random()
-
-    # 50% — просто случайные буквы
     if r < 0.50:
         return _rand_letters_mixed()
-
-    # 25% — случайные цифры
     if r < 0.75:
         return _rand_digits()
-
-    # 20% — смесь букв и цифр
     if r < 0.95:
         return _rand_mixed()
-
-    # 5% — несколько «слов» через пробел
     return _rand_gibberish_phrase()
 
 
 def _generate_live_text_safe() -> str:
-    """Обёртка: гарантированно не пустая строка."""
     try:
         t = _generate_live_text().strip()
         return t if t else _rand_letters()
@@ -914,8 +894,9 @@ class Watcher:
                         pass
                     await asyncio.sleep(1)
 
-                await channel.connect(timeout=CONNECT_TIMEOUT, self_deaf=False, self_mute=False)
-                log.info("[%s] подключен к %s (без мута)", self.name, channel.name)
+                # Дежурные тоже заходят в муте
+                await channel.connect(timeout=CONNECT_TIMEOUT, self_deaf=True, self_mute=True)
+                log.info("[%s] подключен к %s", self.name, channel.name)
                 _register_voice_ok(self.key)
                 return True, "Успешно"
             except Exception as e:
@@ -940,7 +921,6 @@ class Watcher:
                 delay = min(delay * 2, 600)
 
     async def spam_messages(self, channel_id, count):
-        """Отправляет count бессмысленных сообщений в канал."""
         global total_messages_sent
         try:
             channel = await _safe_get_channel(self.client, channel_id)
@@ -951,7 +931,6 @@ class Watcher:
                 text = _generate_live_text_safe()
                 await channel.send(text)
                 total_messages_sent += 1
-                # Человеческая задержка: 1.2–3.5 сек
                 await asyncio.sleep(random.uniform(1.2, 3.5))
 
             log.info("[%s] Отправил %d бессмысленных сообщений", self.name, count)
@@ -972,6 +951,11 @@ async def _enforce_mute(client_name: str):
         vc = client.voice_clients[0]
         if not vc.is_connected() or not vc.channel:
             return
+            
+        # Защита от кика: не трогаем состояние первые 5 секунд после входа
+        if hasattr(vc, '_connected_time') and (time.time() - vc._connected_time) < 5:
+            return
+
         guild = vc.guild
         if guild is None:
             return
@@ -1041,6 +1025,8 @@ async def _ensure_connected(client_name: str):
             await channel.connect(timeout=CONNECT_TIMEOUT, self_deaf=True, self_mute=True)
             log.info("[%s] подключен к %s (В МУТЕ 24/7)", client_name.upper(), channel.name)
             _register_voice_ok(client_name)
+            
+            # НЕ ВЫЗЫВАЕМ _enforce_mute здесь, чтобы не провоцировать Discord на кик
         except Exception as e:
             log.warning("[%s] ошибка подключения: %s", client_name.upper(), e)
             _register_voice_drop(client_name, f"connect: {e}")
@@ -1413,7 +1399,6 @@ async def on_message(message):
     total_commands_handled += 1
     low = content.lower()
 
-    # --- !help / !panel / !ping / !info ---
     if low in ("!help", "!commands"):
         await message.channel.send(_build_help())
         return
@@ -1455,7 +1440,6 @@ async def on_message(message):
         await message.channel.send("📸 Состояние:", file=f)
         return
 
-    # --- !write ---
     if parts[0].lower() == "!write":
         if len(parts) < 2 or not parts[1].isdigit():
             await message.channel.send("⚠️ `!write <число>`")
@@ -1482,7 +1466,6 @@ async def on_message(message):
         await message.channel.send(f"✅ Готово." if ok else "❌ Ошибка.")
         return
 
-    # --- !timely ---
     if low == "!timely":
         sent = []
         for w in (watcher_egoist, watcher_egorik):
@@ -1500,7 +1483,6 @@ async def on_message(message):
         )
         return
 
-    # --- !reserve on/off ---
     if parts[0].lower() == "!reserve" and len(parts) >= 2:
         if reserve_client is None:
             await message.channel.send("⚠️ RESERVE не настроен.")
@@ -1521,7 +1503,6 @@ async def on_message(message):
             await message.channel.send("⚠️ `!reserve on|off`")
         return
 
-    # --- !pause / !resume ---
     if parts[0].lower() in ("!pause", "!resume") and len(parts) >= 2:
         target = parts[1].lower()
         if target not in ALL_KEYS or _get_client(target) is None:
@@ -1536,7 +1517,6 @@ async def on_message(message):
             await message.channel.send(f"▶️ {target} возобновлён.")
         return
 
-    # --- !move / !massmove ---
     if parts[0].lower() == "!move" and len(parts) >= 3:
         target, ch_id_s = parts[1].lower(), parts[2]
         try:
@@ -1588,7 +1568,6 @@ async def on_message(message):
         )
         return
 
-    # --- !blacklist ---
     if parts[0].lower() == "!blacklist" and len(parts) >= 2:
         if parts[1].lower() == "list":
             if _blacklist:
@@ -1612,7 +1591,6 @@ async def on_message(message):
             await message.channel.send("⚠️ Использование: `!blacklist <user_id>` / `list` / `remove <id>`")
         return
 
-    # --- дежурные ---
     if low == "!all on":
         for w in (watcher_egoist, watcher_egorik):
             if w:
@@ -1698,9 +1676,8 @@ def _install_signal_handlers(loop):
 
 
 if __name__ == "__main__":
-    # Запускаем веб-сервер в отдельном потоке ПОСЛЕ определения всех функций
     threading.Thread(target=run_web_server, daemon=True).start()
-    time.sleep(2) # Даем серверу время запуститься перед стартом асинхронного цикла
+    time.sleep(2)
 
     try:
         loop = asyncio.new_event_loop()
