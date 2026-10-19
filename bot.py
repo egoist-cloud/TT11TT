@@ -1,5 +1,5 @@
 # ====================================================
-# TT11TT — Discord боты (v34 - Stable Voice)
+# TT11TT — Discord боты (v36 - Final Fix)
 # ====================================================
 import os
 import sys
@@ -42,29 +42,25 @@ def exception_handler(loop, context):
         log.error("".join(traceback.format_tb(exc.__traceback__)))
 
 # ====================================================
-# ENV
+# ENV И НАСТРОЙКИ
 # ====================================================
 def get_env_int(name, default=0):
     val = os.getenv(name)
-    if not val:
-        return default
+    if not val: return default
     val = str(val).strip().strip('"').strip("'")
-    try:
-        return int(val)
+    try: return int(val)
     except ValueError:
         log.error("ОШИБКА: переменная %s должна быть числом, а не '%s'!", name, val)
         return default
 
 def get_env_str(name):
     val = os.getenv(name)
-    if not val:
-        return None
+    if not val: return None
     return val.strip().strip('"').strip("'")
 
 def get_env_bool(name, default=False):
     val = get_env_str(name)
-    if val is None:
-        return default
+    if val is None: return default
     return val.lower() in ("1", "true", "yes", "on")
 
 TOKEN_MAIN = get_env_str("DISCORD_TOKEN_1")
@@ -84,11 +80,8 @@ RENDER_URL = get_env_str("RENDER_URL") or "https://tt11tt-1.onrender.com"
 STATUS_ROTATION = get_env_bool("STATUS_ROTATION", False)
 SPAM_CHANNEL_ID = 1270672504582832150
 
-log.info("=" * 50)
-log.info("Загрузка конфигурации...")
-log.info("Канал: %s | Гильдия: %s", MAIN_CHANNEL_ID, GUILD_ID or "все")
-log.info("Резерв (Узбечка): %s", "вкл" if TOKEN_RESERVE else "нет токена")
-log.info("=" * 50)
+# ID канала для отчетов (тот, что вы указали)
+REPORT_CHANNEL_ID = 1241013075151425650
 
 # ====================================================
 # КОНСТАНТЫ
@@ -218,33 +211,22 @@ _LOCKS = {"main": _main_lock, "second": _second_lock, "third": _third_lock, "res
 # ВЕБ-СЕРВЕР
 # ====================================================
 def _prometheus_metrics() -> str:
-    lines = [
-        "# HELP tt11tt_reconnects_total Всего реконнектов",
-        "# TYPE tt11tt_reconnects_total counter"
-    ]
-    for k, v in reconnect_stats.items():
-        lines.append(f'tt11tt_reconnects_total{{client="{k}"}} {v}')
-
+    lines = ["# HELP tt11tt_reconnects_total Всего реконнектов", "# TYPE tt11tt_reconnects_total counter"]
+    for k, v in reconnect_stats.items(): lines.append(f'tt11tt_reconnects_total{{client="{k}"}} {v}')
     lines.append("# HELP tt11tt_voice_uptime_seconds Uptime в войсе")
     lines.append("# TYPE tt11tt_voice_uptime_seconds counter")
-    for k, v in _voice_uptime.items():
-        lines.append(f'tt11tt_voice_uptime_seconds{{client="{k}"}} {int(v)}')
-
+    for k, v in _voice_uptime.items(): lines.append(f'tt11tt_voice_uptime_seconds{{client="{k}"}} {int(v)}')
     lines.append("# HELP tt11tt_voice_drops_total Всего вылетов")
     lines.append("# TYPE tt11tt_voice_drops_total counter")
     lines.append(f"tt11tt_voice_drops_total {total_voice_drops}")
-
     lines.append("# HELP tt11tt_client_ready Клиент готов")
     lines.append("# TYPE tt11tt_client_ready gauge")
-    for k, v in _client_ready.items():
-        lines.append(f'tt11tt_client_ready{{client="{k}"}} {1 if v else 0}')
-
+    for k, v in _client_ready.items(): lines.append(f'tt11tt_client_ready{{client="{k}"}} {1 if v else 0}')
     lines.append("# HELP tt11tt_in_voice В голосовом канале")
     lines.append("# TYPE tt11tt_in_voice gauge")
     for k in _CLIENTS:
         in_v = _is_in_voice(_CLIENTS[k], MAIN_CHANNEL_ID)
         lines.append(f'tt11tt_in_voice{{client="{k}"}} {1 if in_v else 0}')
-
     lines.append("# HELP tt11tt_uptime_seconds Uptime процесса")
     lines.append("# TYPE tt11tt_uptime_seconds gauge")
     lines.append(f"tt11tt_uptime_seconds {int(time.time() - start_time)}")
@@ -262,7 +244,6 @@ def _dashboard_html() -> str:
         upt = fmt_duration(_voice_uptime.get(k, 0))
         paused = "⏸" if _paused.get(k) else ""
         rows.append(f"<tr><td>{k.upper()} {paused}</td><td>{ready}</td><td>{in_v} {ch}</td><td>{lat}</td><td>{upt}</td><td>{reconnect_stats.get(k, 0)}</td></tr>")
-
     for w_name, w in (("EGOIST", watcher_egoist), ("EGORIK", watcher_egorik)):
         if not w: continue
         c = w.client
@@ -273,14 +254,8 @@ def _dashboard_html() -> str:
         except Exception: lat = "n/a"
         state = "🟢 вкл" if w.manual_mode else "🔴 выкл"
         rows.append(f"<tr><td>{w_name} ({state})</td><td>{ready}</td><td>{in_v} {ch}</td><td>{lat}</td><td>{fmt_duration(_voice_uptime.get(w.key, 0))}</td><td>{reconnect_stats.get(w.key, 0)}</td></tr>")
-
     events_html = "".join(f"<li>{html.escape(e)}</li>" for e in list(event_log)[-20:])
-    return f"""<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>TT11TT Dashboard</title><meta http-equiv="refresh" content="5">
-<style>body{{font-family:monospace;background:#1e1e1e;color:#e0e0e0;padding:20px;}}h1{{color:#4ec9b0;}}table{{border-collapse:collapse;margin:20px 0;}}th,td{{border:1px solid #444;padding:8px 12px;text-align:left;}}th{{background:#2d2d2d;color:#4ec9b0;}}tr:nth-child(even){{background:#252525;}}.stats{{display:flex;gap:20px;flex-wrap:wrap;}}.stat{{background:#2d2d2d;padding:10px 20px;border-radius:6px;}}.stat b{{color:#4ec9b0;font-size:1.4em;}}ul{{max-height:300px;overflow-y:auto;background:#252525;padding:10px 30px;}}</style></head><body>
-<h1>🎛 TT11TT Dashboard</h1><div class="stats"><div class="stat">Uptime<br><b>{fmt_uptime()}</b></div><div class="stat">Вылетов<br><b>{total_voice_drops}</b></div><div class="stat">Сообщений<br><b>{total_messages_sent}</b></div><div class="stat">Команд<br><b>{total_commands_handled}</b></div></div>
-<h2>Клиенты</h2><table><tr><th>Клиент</th><th>Ready</th><th>Войс</th><th>Latency</th><th>Uptime</th><th>Реконнектов</th></tr>{''.join(rows)}</table>
-<h2>Последние события</h2><ul>{events_html}</ul></body></html>"""
+    return f"""<!DOCTYPE html><html><head><meta charset="utf-8"><title>TT11TT Dashboard</title><meta http-equiv="refresh" content="5"><style>body{{font-family:monospace;background:#1e1e1e;color:#e0e0e0;padding:20px;}}h1{{color:#4ec9b0;}}table{{border-collapse:collapse;margin:20px 0;}}th,td{{border:1px solid #444;padding:8px 12px;text-align:left;}}th{{background:#2d2d2d;color:#4ec9b0;}}tr:nth-child(even){{background:#252525;}}.stats{{display:flex;gap:20px;flex-wrap:wrap;}}.stat{{background:#2d2d2d;padding:10px 20px;border-radius:6px;}}.stat b{{color:#4ec9b0;font-size:1.4em;}}ul{{max-height:300px;overflow-y:auto;background:#252525;padding:10px 30px;}}</style></head><body><h1>🎛 TT11TT Dashboard</h1><div class="stats"><div class="stat">Uptime<br><b>{fmt_uptime()}</b></div><div class="stat">Вылетов<br><b>{total_voice_drops}</b></div><div class="stat">Сообщений<br><b>{total_messages_sent}</b></div><div class="stat">Команд<br><b>{total_commands_handled}</b></div></div><h2>Клиенты</h2><table><tr><th>Клиент</th><th>Ready</th><th>Войс</th><th>Latency</th><th>Uptime</th><th>Реконнектов</th></tr>{''.join(rows)}</table><h2>Последние события</h2><ul>{events_html}</ul></body></html>"""
 
 class HealthHandler(BaseHTTPRequestHandler):
     def _respond(self, code, body, ctype="text/plain; charset=utf-8"):
@@ -289,36 +264,27 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
-
     def do_GET(self):
         try:
             if self.path.startswith("/status"):
                 payload = {"ok": True, "uptime_sec": int(time.time() - start_time), "reconnects": reconnect_stats, "voice_uptime": {k: int(v) for k, v in _voice_uptime.items()}, "voice_drops": total_voice_drops, "messages_sent": total_messages_sent, "commands": total_commands_handled, "channel_not_found": _channel_not_found, "client_ready": _client_ready, "paused": _paused, "reserve_enabled": reserve_manual_enabled}
                 self._respond(200, json.dumps(payload).encode(), "application/json")
-            elif self.path.startswith("/events"):
-                self._respond(200, json.dumps(list(event_log)).encode(), "application/json")
+            elif self.path.startswith("/events"): self._respond(200, json.dumps(list(event_log)).encode(), "application/json")
             elif self.path.startswith("/healthz"):
                 ready_count = sum(1 for k in _CLIENTS if _CLIENTS[k].is_ready())
                 voice_count = sum(1 for k in _CLIENTS if _is_in_voice(_CLIENTS[k], MAIN_CHANNEL_ID))
                 total = len(_CLIENTS)
                 ok = (ready_count == total and voice_count == total)
                 code = 200 if ok else 503
-                body = json.dumps({"ok": ok, "ready": ready_count, "voice": voice_count, "total": total}).encode()
-                self._respond(code, body, "application/json")
-            elif self.path.startswith("/health"):
-                self._respond(200, b"OK")
-            elif self.path.startswith("/metrics"):
-                self._respond(200, _prometheus_metrics().encode(), "text/plain; version=0.0.4")
-            elif self.path.startswith("/dashboard") or self.path == "/":
-                self._respond(200, _dashboard_html().encode(), "text/html; charset=utf-8")
-            else:
-                self._respond(200, b"Bot is running")
+                self._respond(code, json.dumps({"ok": ok, "ready": ready_count, "voice": voice_count, "total": total}).encode(), "application/json")
+            elif self.path.startswith("/health"): self._respond(200, b"OK")
+            elif self.path.startswith("/metrics"): self._respond(200, _prometheus_metrics().encode(), "text/plain; version=0.0.4")
+            elif self.path.startswith("/dashboard") or self.path == "/": self._respond(200, _dashboard_html().encode(), "text/html; charset=utf-8")
+            else: self._respond(200, b"Bot is running")
         except Exception as e:
             log.error("Web Handler Error: %s", e)
             self._respond(500, b"Internal Server Error")
-
-    def log_message(self, *args):
-        pass
+    def log_message(self, *args): pass
 
 def run_web_server():
     port = int(os.getenv("PORT", 10000))
@@ -327,11 +293,10 @@ def run_web_server():
         server = HTTPServer(("0.0.0.0", port), HealthHandler)
         log.info("Веб-сервер успешно запущен на 0.0.0.0:%d", port)
         server.serve_forever()
-    except Exception as e:
-        log.error("Web server error: %s", e)
+    except Exception as e: log.error("Web server error: %s", e)
 
 # ====================================================
-# УТИЛИТЫ
+# УТИЛИТЫ И ОТЧЕТЫ
 # ====================================================
 def log_event(text: str):
     ts = time.strftime("%H:%M:%S")
@@ -343,19 +308,24 @@ def log_reconnect(name: str):
     last_event_time[name] = time.time()
     log_event(f"реконнект {name} #{reconnect_stats[name]}")
 
+async def _send_report(client, text: str, client_name: str):
+    """Отправляет отчет в указанный канал (а не в ЛС)"""
+    try:
+        channel = await _safe_get_channel(client, REPORT_CHANNEL_ID)
+        if channel:
+            await channel.send(f"⚠️ **БОТ `{client_name.upper()}` ВЫЛЕТЕЛ**\n{text}")
+    except Exception as e:
+        log.error("Не удалось отправить отчет: %s", e)
+
 async def uptime_pinger():
     await asyncio.sleep(60)
     while not _shutdown_event.is_set():
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(RENDER_URL, timeout=20):
-                    pass
-        except Exception:
-            pass
-        try:
-            await asyncio.wait_for(_shutdown_event.wait(), timeout=14 * 60)
-        except asyncio.TimeoutError:
-            pass
+                async with session.get(RENDER_URL, timeout=20): pass
+        except Exception: pass
+        try: await asyncio.wait_for(_shutdown_event.wait(), timeout=14 * 60)
+        except asyncio.TimeoutError: pass
 
 def fmt_uptime() -> str:
     u = int(time.time() - start_time)
@@ -378,10 +348,8 @@ def _voice_channel_id(client) -> int:
     try:
         if client.voice_clients:
             vc = client.voice_clients[0]
-            if vc and vc.is_connected() and vc.channel:
-                return vc.channel.id
-    except Exception:
-        pass
+            if vc and vc.is_connected() and vc.channel: return vc.channel.id
+    except Exception: pass
     return 0
 
 def _is_in_voice(client, channel_id: int) -> bool:
@@ -394,8 +362,7 @@ async def _safe_get_channel(client, channel_id):
     try:
         ch = await client.fetch_channel(channel_id)
         if ch is not None: return ch
-    except Exception as e:
-        log.debug("fetch_channel(%s) failed: %s", channel_id, e)
+    except Exception as e: log.debug("fetch_channel(%s) failed: %s", channel_id, e)
     if GUILD_ID:
         try:
             guild = client.get_guild(GUILD_ID)
@@ -411,10 +378,8 @@ async def _safe_get_channel(client, channel_id):
                 try:
                     ch = await guild.fetch_channel(channel_id)
                     if ch is not None: return ch
-                except Exception as e:
-                    log.debug("guild.fetch_channel(%s) failed: %s", channel_id, e)
-        except Exception as e:
-            log.debug("fetch_guild(%s) failed: %s", GUILD_ID, e)
+                except Exception as e: log.debug("guild.fetch_channel(%s) failed: %s", channel_id, e)
+        except Exception as e: log.debug("fetch_guild(%s) failed: %s", GUILD_ID, e)
     return None
 
 def _is_dead_socket(client) -> bool:
@@ -422,8 +387,7 @@ def _is_dead_socket(client) -> bool:
     try:
         latency = client.latency
         if latency != latency or latency * 1000 > DEAD_SOCKET_LATENCY_MS: return True
-    except Exception:
-        return True
+    except Exception: return True
     return False
 
 def _get_client(name: str):
@@ -460,6 +424,11 @@ def _register_voice_drop(name: str, reason: str = ""):
     _consecutive_failures[name] = _consecutive_failures.get(name, 0) + 1
     _drops_by_hour[datetime.now().hour] += 1
     log_event(f"⚠️ {name} вылетел из войса ({reason or 'watchdog'})")
+    
+    client = _get_client(name)
+    if client:
+        # Отправляем отчет в указанный канал
+        asyncio.ensure_future(_send_report(client, f"Причина: {reason or 'watchdog'}", name))
 
 async def _log_voice_uptime_periodic():
     while not _shutdown_event.is_set():
@@ -499,10 +468,8 @@ async def status_changer(client, name):
                 else:
                     activity = discord.Activity(type=discord.ActivityType.watching, name=random.choice(WATCHING_STATUSES))
                 await client.change_presence(activity=activity)
-        except Exception as e:
-            log.debug("[%s] status_changer: %s", name, e)
-        try:
-            await asyncio.wait_for(_shutdown_event.wait(), timeout=STATUS_INTERVAL)
+        except Exception as e: log.debug("[%s] status_changer: %s", name, e)
+        try: await asyncio.wait_for(_shutdown_event.wait(), timeout=STATUS_INTERVAL)
         except asyncio.TimeoutError: pass
 
 # ====================================================
@@ -514,7 +481,6 @@ async def _warmup_guild(client_name: str):
         _client_ready[client_name] = True
         _warmup_done[client_name] = True
         return True
-    
     deadline = time.time() + GUILD_READY_TIMEOUT
     while time.time() < deadline:
         if not client.is_ready():
@@ -540,32 +506,25 @@ async def _warmup_guild(client_name: str):
     return False
 
 # ====================================================
-# FULL CLIENT RESTART (Полная перезагрузка при критических ошибках)
+# FULL CLIENT RESTART
 # ====================================================
 async def _full_client_restart(client_name: str):
     client = _get_client(client_name)
     token = _get_token(client_name)
     if client is None or not token: return
-
     log_event(f"🔁 {client_name}: ПОЛНЫЙ перезапуск клиента")
     try:
         if client.voice_clients: await client.voice_clients[0].disconnect(force=True)
     except Exception: pass
     try: await client.close()
     except Exception: pass
-
     await asyncio.sleep(5)
-
     try:
-        if client_name in _CLIENTS:
-            asyncio.ensure_future(safe_start(client, token, client_name.upper()))
-        elif client_name == "egoist" and watcher_egoist:
-            asyncio.ensure_future(watcher_egoist.start())
-        elif client_name == "egorik" and watcher_egorik:
-            asyncio.ensure_future(watcher_egorik.start())
+        if client_name in _CLIENTS: asyncio.ensure_future(safe_start(client, token, client_name.upper()))
+        elif client_name == "egoist" and watcher_egoist: asyncio.ensure_future(watcher_egoist.start())
+        elif client_name == "egorik" and watcher_egorik: asyncio.ensure_future(watcher_egorik.start())
         _consecutive_failures[client_name] = 0
-    except Exception as e:
-        log.error("[%s] full restart failed: %s", client_name, e)
+    except Exception as e: log.error("[%s] full restart failed: %s", client_name, e)
 
 # ====================================================
 # WATCHER
@@ -590,18 +549,14 @@ class Watcher:
             await _warmup_guild(self.key)
             self.client.loop.create_task(status_changer(self.client, self.name))
             self._start_watchdog()
-
         @self.client.event
         async def on_disconnect():
-            if self.manual_mode and not self.disabled:
-                log_event(f"[{self.name}] on_disconnect")
-
+            if self.manual_mode and not self.disabled: log_event(f"[{self.name}] on_disconnect")
         @self.client.event
         async def on_resumed():
             log.info("[%s] resumed", self.name)
             if not _client_ready.get(self.key, False): await _warmup_guild(self.key)
             if self.manual_mode and not self.disabled: await self.connect(MAIN_CHANNEL_ID)
-
         @self.client.event
         async def on_voice_state_update(member, before, after):
             if GUILD_ID and member.guild.id != GUILD_ID: return
@@ -618,43 +573,32 @@ class Watcher:
             self._watchdog_task = self.client.loop.create_task(self._watchdog())
 
     async def _watchdog(self):
-        while not _shutdown_event.is_set() and not _warmup_done.get(self.key, False):
-            await asyncio.sleep(1.0)
+        while not _shutdown_event.is_set() and not _warmup_done.get(self.key, False): await asyncio.sleep(1.0)
         while not _shutdown_event.is_set():
             interval = _watchdog_intervals.get(self.key, WATCHDOG_BASE_INTERVAL)
-            if _channel_not_found.get(self.key, 0) > 0:
-                interval = max(interval, _channel_backoff.get(self.key, interval))
+            if _channel_not_found.get(self.key, 0) > 0: interval = max(interval, _channel_backoff.get(self.key, interval))
             await asyncio.sleep(interval)
-
             if _paused.get(self.key, False): continue
             if self.disabled or not self.manual_mode: continue
             if not self.client.is_ready() or not _client_ready.get(self.key, False): continue
-
             if _is_dead_socket(self.client):
                 log_event(f"[{self.name}] dead socket")
                 _register_voice_drop(self.key, "dead-socket")
                 log_reconnect(self.key)
                 await self._force_reconnect()
                 continue
-
             if not _is_in_voice(self.client, MAIN_CHANNEL_ID):
                 now = time.time()
                 if now - _reconnect_guard.get(self.key, 0) < RECONNECT_GUARD_SEC: continue
                 _reconnect_guard[self.key] = now
-
                 if _channel_not_found.get(self.key, 0) > 0:
                     await self.connect(MAIN_CHANNEL_ID)
                     continue
-
                 _register_voice_drop(self.key, "not-in-voice")
                 log_reconnect(self.key)
-
-                if _consecutive_failures.get(self.key, 0) >= FULL_RESTART_THRESHOLD:
-                    await _full_client_restart(self.key)
-                else:
-                    await self._force_reconnect()
+                if _consecutive_failures.get(self.key, 0) >= FULL_RESTART_THRESHOLD: await _full_client_restart(self.key)
+                else: await self._force_reconnect()
                 continue
-
             _register_voice_ok(self.key)
 
     async def _force_reconnect(self):
@@ -674,16 +618,13 @@ class Watcher:
                     _channel_not_found[self.key] = _channel_not_found.get(self.key, 0) + 1
                     _channel_backoff[self.key] = min(CHANNEL_NOT_FOUND_BACKOFF_MAX, _channel_backoff.get(self.key, CHANNEL_NOT_FOUND_BACKOFF_MIN) * 1.5)
                     return False, "Канал не найден"
-
                 _channel_not_found[self.key] = 0
                 _channel_backoff[self.key] = CHANNEL_NOT_FOUND_BACKOFF_MIN
-
                 if _is_in_voice(self.client, channel_id): return True, "Уже в канале"
                 if self.client.voice_clients:
                     try: await self.client.voice_clients[0].disconnect(force=True)
                     except Exception: pass
                     await asyncio.sleep(1)
-
                 await channel.connect(timeout=CONNECT_TIMEOUT, self_deaf=True, self_mute=True)
                 log.info("[%s] подключен к %s", self.name, channel.name)
                 _register_voice_ok(self.key)
@@ -739,8 +680,7 @@ async def _enforce_mute(client_name: str):
             if me.voice.self_mute and me.voice.self_deaf: return
             await guild.change_voice_state(channel=vc.channel, self_mute=True, self_deaf=True)
             log.info("[%s] принудительный мьют/деаф", client_name.upper())
-    except Exception as e:
-        log.debug("[%s] enforce_mute: %s", client_name, e)
+    except Exception as e: log.debug("[%s] enforce_mute: %s", client_name, e)
 
 async def _force_reconnect(client_name: str):
     client = _get_client(client_name)
@@ -763,7 +703,6 @@ async def _ensure_connected(client_name: str):
         _channel_backoff[client_name] = CHANNEL_NOT_FOUND_BACKOFF_MIN
         await _enforce_mute(client_name)
         return
-
     lock = _LOCKS.get(client_name)
     if lock is None: return
     async with lock:
@@ -775,12 +714,10 @@ async def _ensure_connected(client_name: str):
             return
         _channel_not_found[client_name] = 0
         _channel_backoff[client_name] = CHANNEL_NOT_FOUND_BACKOFF_MIN
-
         if client.voice_clients:
             try: await client.voice_clients[0].disconnect(force=True)
             except Exception: pass
             await asyncio.sleep(1)
-
         try:
             await channel.connect(timeout=CONNECT_TIMEOUT, self_deaf=True, self_mute=True)
             log.info("[%s] подключен к %s (В МУТЕ 24/7)", client_name.upper(), channel.name)
@@ -792,47 +729,33 @@ async def _ensure_connected(client_name: str):
 async def _watchdog_loop(client_name: str):
     client = _get_client(client_name)
     if client is None: return
-    while not _shutdown_event.is_set() and not _warmup_done.get(client_name, False):
-        await asyncio.sleep(1.0)
-
+    while not _shutdown_event.is_set() and not _warmup_done.get(client_name, False): await asyncio.sleep(1.0)
     while not _shutdown_event.is_set():
         interval = _watchdog_intervals.get(client_name, WATCHDOG_BASE_INTERVAL)
-        if _channel_not_found.get(client_name, 0) > 0:
-            interval = max(interval, _channel_backoff.get(client_name, interval))
+        if _channel_not_found.get(client_name, 0) > 0: interval = max(interval, _channel_backoff.get(client_name, interval))
         await asyncio.sleep(interval)
-
         if _paused.get(client_name, False): continue
         if not _client_ready.get(client_name, False): continue
         if client_name == "reserve" and not reserve_manual_enabled: continue
-
         if _is_dead_socket(client):
             log_event(f"[{client_name}] dead socket")
             _register_voice_drop(client_name, "dead-socket")
             log_reconnect(client_name)
-            if _consecutive_failures.get(client_name, 0) >= FULL_RESTART_THRESHOLD:
-                await _full_client_restart(client_name)
-            else:
-                await _force_reconnect(client_name)
+            if _consecutive_failures.get(client_name, 0) >= FULL_RESTART_THRESHOLD: await _full_client_restart(client_name)
+            else: await _force_reconnect(client_name)
             continue
-
         if not _is_in_voice(client, MAIN_CHANNEL_ID):
             now = time.time()
             if now - _reconnect_guard.get(client_name, 0) < RECONNECT_GUARD_SEC: continue
             _reconnect_guard[client_name] = now
-
             if _channel_not_found.get(client_name, 0) > 0:
                 await _ensure_connected(client_name)
                 continue
-
             _register_voice_drop(client_name, "not-in-voice")
             log_reconnect(client_name)
-
-            if _consecutive_failures.get(client_name, 0) >= FULL_RESTART_THRESHOLD:
-                await _full_client_restart(client_name)
-            else:
-                await _ensure_connected(client_name)
+            if _consecutive_failures.get(client_name, 0) >= FULL_RESTART_THRESHOLD: await _full_client_restart(client_name)
+            else: await _ensure_connected(client_name)
             continue
-
         _register_voice_ok(client_name)
         await _enforce_mute(client_name)
 
@@ -846,24 +769,22 @@ def _bind_client_events(name, client):
             _watchdogs_started.add(name)
             client.loop.create_task(_watchdog_loop(name))
             client.loop.create_task(status_changer(client, name.upper()))
-
     @client.event
-    async def on_disconnect():
-        log.warning("[%s] on_disconnect", name.upper())
-
+    async def on_disconnect(): log.warning("[%s] on_disconnect", name.upper())
     @client.event
     async def on_resumed():
         log.info("[%s] resumed", name.upper())
         if not _client_ready.get(name, False): await _warmup_guild(name)
         await _ensure_connected(name)
-
     @client.event
     async def on_voice_state_update(member, before, after):
         if GUILD_ID and member.guild.id != GUILD_ID: return
         me = client.user
         if me is None or member.id != me.id: return
         if not after.channel or after.channel.id != MAIN_CHANNEL_ID:
-            await asyncio.sleep(2)
+            # ОТЧЕТ ПРИ ВЫХОДЕ
+            asyncio.ensure_future(_send_report(client, "Принудительный выход из канала (Voice State Update)", name))
+            await asyncio.sleep(5) # Ждем 5 сек перед переподключением!
             await _ensure_connected(name)
             return
         if not after.self_mute or not after.self_deaf:
@@ -894,8 +815,7 @@ async def timely_scheduler():
                         if channel:
                             await channel.send("/timely")
                             log_event(f"[{target.name}] /timely отправлен")
-                    except Exception as e:
-                        log.error("[%s] timely error: %s", target.name, e)
+                    except Exception as e: log.error("[%s] timely error: %s", target.name, e)
             await asyncio.sleep(61)
         await asyncio.sleep(30)
 
@@ -909,11 +829,7 @@ def _w_state(w) -> str:
     return "🟡 ожидание"
 
 def _build_panel() -> str:
-    lines = [
-        "🎛 **ПАНЕЛЬ TT11TT**",
-        f"⏱ Uptime: **{fmt_uptime()}**",
-        f"🔻 Всего вылетов: **{total_voice_drops}**",
-    ]
+    lines = ["🎛 **ПАНЕЛЬ TT11TT**", f"⏱ Uptime: **{fmt_uptime()}**", f"🔻 Всего вылетов: **{total_voice_drops}**"]
     nf = sum(_channel_not_found.values())
     if nf: lines.append(f"⚠️ Канал не найден: **{nf}**")
     lines += ["", "**Дежурные:**", f"  • Egoist: {_w_state(watcher_egoist)}", f"  • Egorik: {_w_state(watcher_egorik)}", "", "**24/7 боты (мут):**"]
@@ -925,7 +841,6 @@ def _build_panel() -> str:
         elif not ch: status = "🔴 не в голосе"
         else: status = f"🟡 другой `{ch}`"
         lines.append(f"  • {n.upper()}: {paused}{status}")
-
     if reserve_client is not None:
         ch = _voice_channel_id(reserve_client)
         paused = "⏸ " if _paused.get("reserve") else ""
@@ -934,9 +849,7 @@ def _build_panel() -> str:
         elif not ch: rstat = "🔴 не в голосе"
         else: rstat = f"🟡 другой `{ch}`"
         lines.append(f"  • **RESERVE**: {paused}{rstat}")
-    else:
-        lines.append("  • **RESERVE**: ⚪ нет токена")
-
+    else: lines.append("  • **RESERVE**: ⚪ нет токена")
     lines += ["", f"**Сообщений:** {total_messages_sent} | **Команд:** {total_commands_handled}", "", "**Команды:** `!panel` `!ping` `!stats` `!logs` `!info` `!help`", "`!screenshot` `!latency` `!stats_by_hour`", "`!on`/`!off` `egoist`/`egorik`, `!all on/off`", "`!reserve on/off`, `!pause`/`!resume <client>`", "`!write <n>`, `!timely`, `!move`, `!massmove`, `!blacklist`"]
     return "\n".join(lines)
 
@@ -950,8 +863,7 @@ def _build_ping(client_list) -> str:
                 lines.append(f"• **{name}**: `{latency:.0f} ms` {flag}")
             except Exception: lines.append(f"• **{name}**: `n/a`")
         else: lines.append(f"• **{name}**: ❌ не готов")
-    lines.append("")
-    lines.append(f"⏱ Uptime: **{fmt_uptime()}**")
+    lines.append(""); lines.append(f"⏱ Uptime: **{fmt_uptime()}**")
     return "\n".join(lines)
 
 def _build_latency() -> str:
@@ -1006,16 +918,10 @@ def _build_help() -> str:
 
 async def _build_screenshot_file() -> discord.File:
     payload = {
-        "generated_at": datetime.utcnow().isoformat(),
-        "uptime": fmt_uptime(),
-        "uptime_sec": int(time.time() - start_time),
-        "reconnects": reconnect_stats,
-        "voice_uptime": {k: int(v) for k, v in _voice_uptime.items()},
-        "voice_drops": total_voice_drops,
-        "drops_by_hour": _drops_by_hour,
-        "channel_not_found": _channel_not_found,
-        "paused": _paused,
-        "reserve_enabled": reserve_manual_enabled,
+        "generated_at": datetime.utcnow().isoformat(), "uptime": fmt_uptime(), "uptime_sec": int(time.time() - start_time),
+        "reconnects": reconnect_stats, "voice_uptime": {k: int(v) for k, v in _voice_uptime.items()},
+        "voice_drops": total_voice_drops, "drops_by_hour": _drops_by_hour, "channel_not_found": _channel_not_found,
+        "paused": _paused, "reserve_enabled": reserve_manual_enabled,
         "clients": {k: {"user": str(_CLIENTS[k].user) if _CLIENTS[k].user else None, "ready": _CLIENTS[k].is_ready(), "channel": _voice_channel_id(_CLIENTS[k]), "latency_ms": (_CLIENTS[k].latency * 1000 if _CLIENTS[k].is_ready() else None)} for k in _CLIENTS},
         "watchers": {w.name: {"manual": w.manual_mode, "disabled": w.disabled, "ready": w.client.is_ready(), "channel": _voice_channel_id(w.client)} for w in (watcher_egoist, watcher_egorik) if w},
         "events": list(event_log),
@@ -1029,16 +935,13 @@ async def _build_screenshot_file() -> discord.File:
 @main_client.event
 async def on_message(message):
     global total_commands_handled, _last_write_at, reserve_manual_enabled
-
     if main_client.user is None or message.author.id == main_client.user.id: return
     if not isinstance(message.channel, discord.DMChannel): return
     allowed = {USER_ID_EGOIST, USER_ID_EGORIK, MAIN_BOT_USER_ID, main_client.user.id}
     if message.author.id not in allowed or message.author.id in _blacklist: return
-
     content = message.content.strip()
     parts = content.split()
     if not parts: return
-
     total_commands_handled += 1
     low = content.lower()
 
@@ -1167,7 +1070,6 @@ async def on_message(message):
         for w in (watcher_egoist, watcher_egorik):
             if w: w.manual_mode, w.disabled = False, True; await w.disconnect()
         await message.channel.send("⛔ Все выключены."); return
-
     if len(parts) >= 2:
         cmd, t = parts[0].lower(), parts[1].lower()
         w = watcher_egoist if t == "egoist" else (watcher_egorik if t == "egorik" else None)
@@ -1198,7 +1100,6 @@ async def safe_start(client, token, name):
 async def main():
     global watcher_egoist, watcher_egorik
     log.info("Инициализация...")
-
     watcher_egoist = Watcher(TOKEN_EGOIST, USER_ID_EGOIST, "Egoist") if TOKEN_EGOIST else None
     watcher_egorik = Watcher(TOKEN_EGORIK, USER_ID_EGORIK, "Egorik") if TOKEN_EGORIK else None
 
@@ -1226,10 +1127,8 @@ def _install_signal_handlers(loop):
         except NotImplementedError: pass
 
 if __name__ == "__main__":
-    # Запускаем сервер в фоне
     threading.Thread(target=run_web_server, daemon=True).start()
     time.sleep(1.5)
-
     try:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
