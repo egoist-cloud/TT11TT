@@ -14,11 +14,19 @@ services:
         sync: false
       - key: DISCORD_TOKEN_3
         sync: false
+      - key: DISCORD_TOKEN_4
+        sync: false
+      - key: DISCORD_TOKEN_5
+        sync: false
       - key: VOICE_CHANNEL_ID
         sync: false
       - key: USER_ID_1
         sync: false
       - key: USER_ID_2
+        sync: false
+      - key: USER_ID_3
+        sync: false
+      - key: USER_ID_4
         sync: false
       - key: MAIN_BOT_USER_ID
         sync: false
@@ -30,3 +38,5 @@ services:
         sync: false
       - key: TELEGRAM_CHAT_ID
         sync: false
+      - key: STATUS_ROTATION
+        value: "false"
