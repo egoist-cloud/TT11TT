@@ -1,5 +1,5 @@
 # ====================================================
-# TT11TT — Discord боты (v32)
+# TT11TT — Discord боты (v33 - Fix Kick)
 # 3 x 24/7 + RESERVE + 2 watcher + dashboard + metrics
 # ====================================================
 import os
@@ -103,27 +103,23 @@ log.info("=" * 50)
 STATUS_INTERVAL = 3600
 CONNECT_TIMEOUT = 60.0
 
-WATCHDOG_MIN_INTERVAL = 2.0
-WATCHDOG_BASE_INTERVAL = 3.0
-WATCHDOG_MAX_INTERVAL = 10.0
+WATCHDOG_MIN_INTERVAL = 3.0
+WATCHDOG_BASE_INTERVAL = 5.0
+WATCHDOG_MAX_INTERVAL = 15.0
 
-RECONNECT_MIN_DELAY = 2.0
-RECONNECT_MAX_DELAY = 8.0
+RECONNECT_MIN_DELAY = 3.0
+RECONNECT_MAX_DELAY = 10.0
 
 DEAD_SOCKET_LATENCY_MS = 30_000
-DEAD_SOCKET_TIMEOUT = 900
-DEAD_SOCKET_CRITICAL = 3600
 FULL_RESTART_THRESHOLD = 3
 
 ALL_OFFLINE_RESTART_SEC = 120
 
-RECONNECT_GUARD_SEC = 5.0
+RECONNECT_GUARD_SEC = 10.0
 
-STABILITY_WINDOW_SEC = 3600
-STABILITY_MAX_DROPS = 5
 VOICE_UPTIME_LOG_INTERVAL = 1800
 
-CHANNEL_NOT_FOUND_BACKOFF_MIN = 3.0
+CHANNEL_NOT_FOUND_BACKOFF_MIN = 5.0
 CHANNEL_NOT_FOUND_BACKOFF_MAX = 30.0
 
 GUILD_READY_TIMEOUT = 30.0
@@ -199,7 +195,6 @@ start_time = time.time()
 ALL_KEYS = ("main", "second", "third", "reserve", "egoist", "egorik")
 
 reconnect_stats = {k: 0 for k in ALL_KEYS}
-reconnect_history = {k: deque(maxlen=500) for k in ALL_KEYS}
 last_event_time = {k: time.time() for k in ALL_KEYS}
 
 _voice_uptime = {k: 0.0 for k in ALL_KEYS}
@@ -207,7 +202,6 @@ _voice_last_ok = {k: time.time() for k in ALL_KEYS}
 _reconnect_guard = {k: 0.0 for k in ALL_KEYS}
 _reconnect_locks = {k: asyncio.Lock() for k in ALL_KEYS}
 _watchdog_intervals = {k: WATCHDOG_BASE_INTERVAL for k in ALL_KEYS}
-_last_uptime_log = {k: 0.0 for k in ALL_KEYS}
 
 _client_ready = {k: False for k in ALL_KEYS}
 _warmup_done = {k: False for k in ALL_KEYS}
@@ -221,14 +215,12 @@ _drops_by_hour = {h: 0 for h in range(24)}
 _blacklist = set()
 
 reserve_manual_enabled = True
-
 total_messages_sent = 0
 total_commands_handled = 0
 total_voice_drops = 0
 event_log = deque(maxlen=200)
 
 _watchdogs_started = set()
-_user_cache = {}
 _main_lock = asyncio.Lock()
 _second_lock = asyncio.Lock()
 _third_lock = asyncio.Lock()
@@ -379,50 +371,54 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
-        if self.path.startswith("/status"):
-            payload = {
-                "ok": True,
-                "uptime_sec": int(time.time() - start_time),
-                "reconnects": reconnect_stats,
-                "voice_uptime": {k: int(v) for k, v in _voice_uptime.items()},
-                "voice_drops": total_voice_drops,
-                "messages_sent": total_messages_sent,
-                "commands": total_commands_handled,
-                "channel_not_found": _channel_not_found,
-                "client_ready": _client_ready,
-                "paused": _paused,
-                "reserve_enabled": reserve_manual_enabled,
-            }
-            self._respond(200, json.dumps(payload).encode(), "application/json")
+        try:
+            if self.path.startswith("/status"):
+                payload = {
+                    "ok": True,
+                    "uptime_sec": int(time.time() - start_time),
+                    "reconnects": reconnect_stats,
+                    "voice_uptime": {k: int(v) for k, v in _voice_uptime.items()},
+                    "voice_drops": total_voice_drops,
+                    "messages_sent": total_messages_sent,
+                    "commands": total_commands_handled,
+                    "channel_not_found": _channel_not_found,
+                    "client_ready": _client_ready,
+                    "paused": _paused,
+                    "reserve_enabled": reserve_manual_enabled,
+                }
+                self._respond(200, json.dumps(payload).encode(), "application/json")
 
-        elif self.path.startswith("/events"):
-            self._respond(200, json.dumps(list(event_log)).encode(), "application/json")
+            elif self.path.startswith("/events"):
+                self._respond(200, json.dumps(list(event_log)).encode(), "application/json")
 
-        elif self.path.startswith("/healthz"):
-            ready_count = sum(1 for k in _CLIENTS if _CLIENTS[k].is_ready())
-            voice_count = sum(1 for k in _CLIENTS if _is_in_voice(_CLIENTS[k], MAIN_CHANNEL_ID))
-            total = len(_CLIENTS)
-            ok = (ready_count == total and voice_count == total)
-            code = 200 if ok else 503
-            body = json.dumps({
-                "ok": ok,
-                "ready": ready_count,
-                "voice": voice_count,
-                "total": total,
-            }).encode()
-            self._respond(code, body, "application/json")
+            elif self.path.startswith("/healthz"):
+                ready_count = sum(1 for k in _CLIENTS if _CLIENTS[k].is_ready())
+                voice_count = sum(1 for k in _CLIENTS if _is_in_voice(_CLIENTS[k], MAIN_CHANNEL_ID))
+                total = len(_CLIENTS)
+                ok = (ready_count == total and voice_count == total)
+                code = 200 if ok else 503
+                body = json.dumps({
+                    "ok": ok,
+                    "ready": ready_count,
+                    "voice": voice_count,
+                    "total": total,
+                }).encode()
+                self._respond(code, body, "application/json")
 
-        elif self.path.startswith("/health"):
-            self._respond(200, b"OK")
+            elif self.path.startswith("/health"):
+                self._respond(200, b"OK")
 
-        elif self.path.startswith("/metrics"):
-            self._respond(200, _prometheus_metrics().encode(), "text/plain; version=0.0.4")
+            elif self.path.startswith("/metrics"):
+                self._respond(200, _prometheus_metrics().encode(), "text/plain; version=0.0.4")
 
-        elif self.path.startswith("/dashboard") or self.path == "/":
-            self._respond(200, _dashboard_html().encode(), "text/html; charset=utf-8")
+            elif self.path.startswith("/dashboard") or self.path == "/":
+                self._respond(200, _dashboard_html().encode(), "text/html; charset=utf-8")
 
-        else:
-            self._respond(200, b"Bot is running")
+            else:
+                self._respond(200, b"Bot is running")
+        except Exception as e:
+            log.error("Web Handler Error: %s", e)
+            self._respond(500, b"Internal Server Error")
 
     def log_message(self, *args):
         pass
@@ -450,7 +446,6 @@ def log_event(text: str):
 
 def log_reconnect(name: str):
     reconnect_stats[name] = reconnect_stats.get(name, 0) + 1
-    reconnect_history[name].append(time.time())
     last_event_time[name] = time.time()
     log_event(f"реконнект {name} #{reconnect_stats[name]}")
 
@@ -951,16 +946,18 @@ async def _enforce_mute(client_name: str):
         vc = client.voice_clients[0]
         if not vc.is_connected() or not vc.channel:
             return
-            
-        # Защита от кика: не трогаем состояние первые 5 секунд после входа
-        if hasattr(vc, '_connected_time') and (time.time() - vc._connected_time) < 5:
-            return
 
         guild = vc.guild
         if guild is None:
             return
         me = guild.get_member(client.user.id)
-        if me and me.voice and (not me.voice.self_mute or not me.voice.self_deaf):
+        
+        # Мягкая проверка: если мут уже стоит, ничего не делаем
+        if me and me.voice:
+            if me.voice.self_mute and me.voice.self_deaf:
+                return
+                
+            # Если мута нет, применяем
             await guild.change_voice_state(
                 channel=vc.channel, self_mute=True, self_deaf=True
             )
@@ -1025,8 +1022,6 @@ async def _ensure_connected(client_name: str):
             await channel.connect(timeout=CONNECT_TIMEOUT, self_deaf=True, self_mute=True)
             log.info("[%s] подключен к %s (В МУТЕ 24/7)", client_name.upper(), channel.name)
             _register_voice_ok(client_name)
-            
-            # НЕ ВЫЗЫВАЕМ _enforce_mute здесь, чтобы не провоцировать Discord на кик
         except Exception as e:
             log.warning("[%s] ошибка подключения: %s", client_name.upper(), e)
             _register_voice_drop(client_name, f"connect: {e}")
