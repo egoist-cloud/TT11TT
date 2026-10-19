@@ -1,5 +1,5 @@
 # ====================================================
-# TT11TT — Discord боты (v4, Управление на Main)
+# TT11TT — Discord боты (v6, Мут 24/7 + Дежурные)
 # ====================================================
 import os
 import sys
@@ -63,11 +63,11 @@ def get_env_bool(name, default=False):
         return default
     return val.lower() in ("1", "true", "yes", "on")
 
-TOKEN_MAIN = get_env_str("DISCORD_TOKEN_1")     # Управляющий (commback)
-TOKEN_SECOND = get_env_str("DISCORD_TOKEN_4")   # 24/7 бот
-TOKEN_THIRD = get_env_str("DISCORD_TOKEN_5")    # 24/7 бот (Ichigo)
+TOKEN_MAIN = get_env_str("DISCORD_TOKEN_1")     # Управляющий (24/7 мут)
+TOKEN_SECOND = get_env_str("DISCORD_TOKEN_4")   # 24/7 мут
+TOKEN_THIRD = get_env_str("DISCORD_TOKEN_5")    # 24/7 мут (Ichigo)
 
-MAIN_CHANNEL_ID = get_env_int("VOICE_CHANNEL_ID")
+MAIN_CHANNEL_ID = get_env_int("VOICE_CHANNEL_ID") # Твой новый канал 1561816460161060964
 GUILD_ID = get_env_int("GUILD_ID")
 
 TOKEN_EGOIST = get_env_str("DISCORD_TOKEN_2")
@@ -77,7 +77,7 @@ TOKEN_EGORIK = get_env_str("DISCORD_TOKEN_3")
 USER_ID_EGORIK = get_env_int("USER_ID_2")
 
 MAIN_BOT_USER_ID = get_env_int("MAIN_BOT_USER_ID", 0)
-RENDER_URL = get_env_str("RENDER_URL") or "https://tt11tt.onrender.com"
+RENDER_URL = get_env_str("RENDER_URL") or "https://tt11tt-1.onrender.com"
 TELEGRAM_TOKEN = get_env_str("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = get_env_str("TELEGRAM_CHAT_ID")
 STATUS_ROTATION = get_env_bool("STATUS_ROTATION", False)
@@ -514,8 +514,10 @@ class Watcher:
                     except Exception:
                         pass
                     await asyncio.sleep(1)
+                
+                # Дежурные заходят БЕЗ МУТА
                 await channel.connect(timeout=CONNECT_TIMEOUT, self_deaf=False, self_mute=False)
-                log.info("[%s] подключен к %s", self.name, channel.name)
+                log.info("[%s] подключен к %s (без мута)", self.name, channel.name)
                 return True, "Успешно"
             except asyncio.TimeoutError:
                 log.warning("[%s] таймаут подключения к %s", self.name, channel_id)
@@ -567,7 +569,14 @@ async def _ensure_connected(client_name):
     if (client.voice_clients
             and client.voice_clients[0].is_connected()
             and client.voice_clients[0].channel.id == MAIN_CHANNEL_ID):
+        # Если уже подключены, проверяем, в муте ли
+        if not client.voice_clients[0].self_mute or not client.voice_clients[0].self_deaf:
+            await client.voice_clients[0].guild.change_voice_state(
+                channel=client.voice_clients[0].channel, self_mute=True, self_deaf=True
+            )
+            log.info("[%s] принудительно включен мут", client_name.upper())
         return
+
     async with _LOCKS[client_name]:
         if (client.voice_clients
                 and client.voice_clients[0].is_connected()
@@ -587,8 +596,9 @@ async def _ensure_connected(client_name):
                 pass
             await asyncio.sleep(1)
         try:
-            await channel.connect(timeout=CONNECT_TIMEOUT, self_deaf=False, self_mute=False)
-            log.info("[%s] подключен к %s", client_name.upper(), channel.name)
+            # Подключаем 24/7 ботов С МУТОМ
+            await channel.connect(timeout=CONNECT_TIMEOUT, self_deaf=True, self_mute=True)
+            log.info("[%s] подключен к %s (В МУТЕ 24/7)", client_name.upper(), channel.name)
         except asyncio.TimeoutError:
             log.warning("[%s] таймаут подключения", client_name.upper())
         except Exception as e:
@@ -656,6 +666,10 @@ def _bind_client_events(name, client, watchdog_coro, ready_extra=None):
         if not after.channel or after.channel.id != MAIN_CHANNEL_ID:
             log_reconnect(name)
             await asyncio.sleep(random.uniform(RECONNECT_MIN_DELAY, RECONNECT_MAX_DELAY))
+            await _ensure_connected(name)
+        elif not after.self_mute or not after.self_deaf:
+            # Если кто-то снял мут, принудительно ставим обратно
+            await asyncio.sleep(1)
             await _ensure_connected(name)
 
 async def _third_ready_extra():
@@ -958,7 +972,7 @@ async def safe_start(client, token, name):
 async def main():
     global watcher_egoist, watcher_egorik
     log.info("-" * 40)
-    log.info("   TT11TT v4 — старт")
+    log.info("   TT11TT v6 — старт")
     log.info("-" * 40)
 
     watcher_egoist = Watcher(TOKEN_EGOIST, USER_ID_EGOIST, "Egoist") if TOKEN_EGOIST else None
