@@ -450,13 +450,13 @@ class HealthHandler(BaseHTTPRequestHandler):
 
 def run_web_server():
     port = int(os.getenv("PORT", 10000))
+    log.info("Запуск веб-сервера на порту %d", port)
     try:
-        HTTPServer(("0.0.0.0", port), HealthHandler).serve_forever()
+        server = HTTPServer(("0.0.0.0", port), HealthHandler)
+        log.info("Веб-сервер успешно запущен на 0.0.0.0:%d", port)
+        server.serve_forever()
     except Exception as e:
         log.error("Web server error: %s", e)
-
-
-threading.Thread(target=run_web_server, daemon=True).start()
 
 
 # ====================================================
@@ -1698,6 +1698,10 @@ def _install_signal_handlers(loop):
 
 
 if __name__ == "__main__":
+    # Запускаем веб-сервер в отдельном потоке ПОСЛЕ определения всех функций
+    threading.Thread(target=run_web_server, daemon=True).start()
+    time.sleep(2) # Даем серверу время запуститься перед стартом асинхронного цикла
+
     try:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
