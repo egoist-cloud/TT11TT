@@ -1,5 +1,5 @@
 # ====================================================
-# TT11TT — Discord боты (v15, Полная версия, 1000+ строк)
+# TT11TT — Discord боты (Финальная версия, 850+ строк)
 # ====================================================
 import os
 import sys
@@ -257,8 +257,7 @@ async def status_changer(client, name):
             await asyncio.wait_for(_shutdown_event.wait(), timeout=STATUS_INTERVAL)
         except asyncio.TimeoutError: 
             pass
-
-# ====================================================
+            # ====================================================
 # ДЕЖУРНЫЕ (Egoist и Egorik)
 # ====================================================
 class Watcher:
@@ -456,8 +455,7 @@ if TOKEN_SECOND:
     _bind_client_events("second", second_client, second_watchdog())
 if TOKEN_THIRD: 
     _bind_client_events("third", third_client, third_watchdog())
-
-# ====================================================
+    # ====================================================
 # РАСПИСАНИЕ (МСК) /timely
 # ====================================================
 async def timely_scheduler():
