@@ -1,5 +1,5 @@
 # ====================================================
-# TT11TT — Discord боты (v38 - Unmute Fix)
+# TT11TT — Discord боты (v39 - Warmup Fix)
 # ====================================================
 import os
 import sys
@@ -97,8 +97,9 @@ RECONNECT_GUARD_SEC = 10.0
 VOICE_UPTIME_LOG_INTERVAL = 1800
 CHANNEL_NOT_FOUND_BACKOFF_MIN = 5.0
 CHANNEL_NOT_FOUND_BACKOFF_MAX = 30.0
-GUILD_READY_TIMEOUT = 30.0
+GUILD_READY_TIMEOUT = 60.0
 LATENCY_HISTORY_SIZE = 60
+WARMUP_RETRY_INTERVAL = 10.0  # как часто пытаться warmup после неудачи
 
 TEXT_STATUSES = ["Commback", "TALENT 24/7", "На страже", "Сижу в войсе"]
 WATCHING_STATUSES = ["как вы играете", "на ваши сообщения", "за порядком"]
@@ -155,6 +156,7 @@ _watchdog_intervals = {k: WATCHDOG_BASE_INTERVAL for k in ALL_KEYS}
 
 _client_ready = {k: False for k in ALL_KEYS}
 _warmup_done = {k: False for k in ALL_KEYS}
+_warmup_task = {k: None for k in ALL_KEYS}  # фоновый retry
 _channel_not_found = {k: 0 for k in ALL_KEYS}
 _channel_backoff = {k: CHANNEL_NOT_FOUND_BACKOFF_MIN for k in ALL_KEYS}
 
@@ -162,6 +164,7 @@ _paused = {k: False for k in ALL_KEYS}
 _consecutive_failures = {k: 0 for k in ALL_KEYS}
 _latency_history = {k: deque(maxlen=LATENCY_HISTORY_SIZE) for k in ALL_KEYS}
 _drops_by_hour = {h: 0 for h in range(24)}
+_drops_day = datetime.utcnow().date()
 _blacklist = set()
 
 reserve_manual_enabled = True
@@ -171,6 +174,7 @@ total_voice_drops = 0
 event_log = deque(maxlen=200)
 
 _watchdogs_started = set()
+_status_started = set()
 _main_lock = asyncio.Lock()
 _second_lock = asyncio.Lock()
 _third_lock = asyncio.Lock()
@@ -350,12 +354,9 @@ async def _safe_get_channel(client, channel_id):
     if GUILD_ID:
         try:
             guild = client.get_guild(GUILD_ID)
-            if guild is not None:
-                ch = guild.get_channel(channel_id)
-                if ch is not None: return ch
-        except Exception: pass
-        try:
-            guild = await client.fetch_guild(GUILD_ID)
+            if guild is None:
+                try: guild = await client.fetch_guild(GUILD_ID)
+                except Exception: guild = None
             if guild is not None:
                 ch = guild.get_channel(channel_id)
                 if ch is not None: return ch
@@ -363,6 +364,12 @@ async def _safe_get_channel(client, channel_id):
                     ch = await guild.fetch_channel(channel_id)
                     if ch is not None: return ch
                 except Exception as e: log.debug("guild.fetch_channel(%s) failed: %s", channel_id, e)
+                # Массовая загрузка каналов как fallback
+                try:
+                    channels = await guild.fetch_channels()
+                    for c in channels:
+                        if c.id == channel_id: return c
+                except Exception as e: log.debug("guild.fetch_channels failed: %s", e)
         except Exception as e: log.debug("fetch_guild(%s) failed: %s", GUILD_ID, e)
     return None
 
@@ -401,7 +408,12 @@ def _register_voice_ok(name: str):
         except Exception: pass
 
 def _register_voice_drop(name: str, reason: str = ""):
-    global total_voice_drops
+    global total_voice_drops, _drops_day
+    # сброс счётчиков по часам в новый день
+    today = datetime.utcnow().date()
+    if today != _drops_day:
+        for h in _drops_by_hour: _drops_by_hour[h] = 0
+        _drops_day = today
     total_voice_drops += 1
     _voice_last_ok[name] = time.time()
     _watchdog_intervals[name] = min(WATCHDOG_MAX_INTERVAL, _watchdog_intervals.get(name, WATCHDOG_BASE_INTERVAL) * 1.5 + 0.5)
@@ -429,7 +441,7 @@ async def _all_offline_watchdog():
         if ready_count == 0:
             if _all_offline_since is None:
                 _all_offline_since = time.time()
-                log_event("⚠️ ВСЕ клиенты offline")
+                log_event("⚠️ ВСЕ клиенты offline — пробую полный рестарт клиентов")
             elif time.time() - _all_offline_since > ALL_OFFLINE_RESTART_SEC:
                 log.error("🚨 ВСЕ offline > %dс — перезапуск процесса", ALL_OFFLINE_RESTART_SEC)
                 os._exit(1)
@@ -454,9 +466,15 @@ async def status_changer(client, name):
         except asyncio.TimeoutError: pass
 
 # ====================================================
-# WARMUP
+# WARMUP (исправлено)
 # ====================================================
-async def _warmup_guild(client_name: str):
+async def _warmup_guild(client_name: str) -> bool:
+    """
+    Пытается прогреть кэш гильдии и канала.
+    При успехе -> _client_ready=True.
+    При неудаче -> _client_ready=True (чтобы watchdog мог работать), но
+    _warmup_done=False -> фоновый retry продолжит попытки.
+    """
     client = _get_client(client_name)
     if client is None or not GUILD_ID:
         _client_ready[client_name] = True
@@ -465,9 +483,8 @@ async def _warmup_guild(client_name: str):
     deadline = time.time() + GUILD_READY_TIMEOUT
     while time.time() < deadline:
         if not client.is_ready():
-            await asyncio.sleep(0.5)
-            continue
-        guild = client.get_guild(GUILD_ID)
+            await asyncio.sleep(1.0)
+            continue        guild = client.get_guild(GUILD_ID)
         if guild is None:
             try: guild = await client.fetch_guild(GUILD_ID)
             except Exception: guild = None
@@ -476,15 +493,43 @@ async def _warmup_guild(client_name: str):
             if channel is None:
                 try: channel = await guild.fetch_channel(MAIN_CHANNEL_ID)
                 except Exception: channel = None
+            if channel is None:
+                try:
+                    channels = await guild.fetch_channels()
+                    for c in channels:
+                        if c.id == MAIN_CHANNEL_ID: channel = c; break
+                except Exception: pass
             if channel is not None:
                 _client_ready[client_name] = True
                 _warmup_done[client_name] = True
                 log.info("[%s] гильдия и канал в кэше", client_name.upper())
                 return True
-        await asyncio.sleep(1.0)
-    log.warning("[%s] warmup не удался за %.0fс", client_name.upper(), GUILD_READY_TIMEOUT)
-    _warmup_done[client_name] = True
+        await asyncio.sleep(2.0)
+    log.warning("[%s] warmup не удался за %.0fс — включаю фоновый retry", client_name.upper(), GUILD_READY_TIMEOUT)
+    # ВАЖНО: всё равно разрешаем watchdog/ensure_connected, иначе бот мёртв
+    _client_ready[client_name] = True
+    _warmup_done[client_name] = False
+    _start_warmup_retry(client_name)
     return False
+
+def _start_warmup_retry(client_name: str):
+    if _warmup_task.get(client_name) and not _warmup_task[client_name].done():
+        return
+    async def _retry():
+        while not _shutdown_event.is_set() and not _warmup_done.get(client_name, False):
+            await asyncio.sleep(WARMUP_RETRY_INTERVAL)
+            client = _get_client(client_name)
+            if client and client.is_ready():
+                try:
+                    guild = client.get_guild(GUILD_ID) or await client.fetch_guild(GUILD_ID)
+                    if guild:
+                        try: await guild.fetch_channels()
+                        except Exception: pass
+                        if guild.get_channel(MAIN_CHANNEL_ID) or await _safe_get_channel(client, MAIN_CHANNEL_ID):
+                            _warmup_done[client_name] = True
+                            log.info("[%s] фоновый warmup успешен", client_name.upper())
+                except Exception: pass
+    _warmup_task[client_name] = asyncio.ensure_future(_retry())
 
 # ====================================================
 # FULL CLIENT RESTART
@@ -521,6 +566,7 @@ class Watcher:
         self.disabled = True
         self._connect_lock = asyncio.Lock()
         self._watchdog_task = None
+        self._status_task = None
         self._register_events()
 
     def _register_events(self):
@@ -528,7 +574,9 @@ class Watcher:
         async def on_ready():
             log.info("[%s] авторизован как %s", self.name, self.client.user)
             await _warmup_guild(self.key)
-            self.client.loop.create_task(status_changer(self.client, self.name))
+            # Задачи создаём один раз
+            if self._status_task is None or self._status_task.done():
+                self._status_task = self.client.loop.create_task(status_changer(self.client, self.name))
             self._start_watchdog()
         @self.client.event
         async def on_disconnect():
@@ -536,27 +584,29 @@ class Watcher:
         @self.client.event
         async def on_resumed():
             log.info("[%s] resumed", self.name)
-            if not _client_ready.get(self.key, False): await _warmup_guild(self.key)
-            if self.manual_mode and not self.disabled: await self.connect(MAIN_CHANNEL_ID)
+            if not _client_ready.get(self.key, False):
+                await _warmup_guild(self.key)
+            if self.manual_mode and not self.disabled:
+                await self.connect(MAIN_CHANNEL_ID)
         @self.client.event
         async def on_voice_state_update(member, before, after):
             if GUILD_ID and member.guild.id != GUILD_ID: return
             me = self.client.user
             if me is None or member.id != me.id: return
             if not self.manual_mode or self.disabled: return
-            
-            # Если бота замутили, снимаем мут
+
             if after.self_mute or after.self_deaf:
                 await asyncio.sleep(1)
                 await self._enforce_unmute()
-            
+
             if not after.channel or after.channel.id != MAIN_CHANNEL_ID:
                 log_reconnect(self.key)
                 await asyncio.sleep(2)
-                if self.manual_mode and not self.disabled: await self.connect(MAIN_CHANNEL_ID)
+                if self.manual_mode and not self.disabled:
+                    await self.connect(MAIN_CHANNEL_ID)
 
     async def _enforce_unmute(self):
-        """Принудительно снимает мут с дежурного"""
+        """Снимает мут: переподключение (надёжно для self-bot)."""
         try:
             vc = self.client.voice_clients[0] if self.client.voice_clients else None
             if not vc or not vc.is_connected() or not vc.channel: return
@@ -564,9 +614,13 @@ class Watcher:
             if not guild: return
             me = guild.get_member(self.client.user.id)
             if me and me.voice and (me.voice.self_mute or me.voice.self_deaf):
-                # Отправляем команду на снятие мута
-                await guild.change_voice_state(channel=vc.channel, self_mute=False, self_deaf=False)
-                log.info("[%s] принудительно снят мут", self.name)
+                # Переподключаемся без мута
+                await vc.disconnect(force=True)
+                await asyncio.sleep(1)
+                channel = await _safe_get_channel(self.client, MAIN_CHANNEL_ID)
+                if channel:
+                    await channel.connect(timeout=CONNECT_TIMEOUT, self_deaf=False, self_mute=False)
+                    log.info("[%s] переподключен без мута", self.name)
         except Exception as e:
             log.debug("[%s] enforce_unmute: %s", self.name, e)
 
@@ -575,18 +629,19 @@ class Watcher:
             self._watchdog_task = self.client.loop.create_task(self._watchdog())
 
     async def _watchdog(self):
-        while not _shutdown_event.is_set() and not _warmup_done.get(self.key, False): await asyncio.sleep(1.0)
+        while not _shutdown_event.is_set() and not _client_ready.get(self.key, False):
+            await asyncio.sleep(1.0)
         while not _shutdown_event.is_set():
             interval = _watchdog_intervals.get(self.key, WATCHDOG_BASE_INTERVAL)
-            if _channel_not_found.get(self.key, 0) > 0: interval = max(interval, _channel_backoff.get(self.key, interval))
+            if _channel_not_found.get(self.key, 0) > 0:
+                interval = max(interval, _channel_backoff.get(self.key, interval))
             await asyncio.sleep(interval)
             if _paused.get(self.key, False): continue
             if self.disabled or not self.manual_mode: continue
-            if not self.client.is_ready() or not _client_ready.get(self.key, False): continue
-            
-            # Проверка на мут
+            if not self.client.is_ready(): continue
+
             await self._enforce_unmute()
-            
+
             if _is_dead_socket(self.client):
                 log_event(f"[{self.name}] dead socket")
                 _register_voice_drop(self.key, "dead-socket")
@@ -602,15 +657,18 @@ class Watcher:
                     continue
                 _register_voice_drop(self.key, "not-in-voice")
                 log_reconnect(self.key)
-                if _consecutive_failures.get(self.key, 0) >= FULL_RESTART_THRESHOLD: await _full_client_restart(self.key)
-                else: await self._force_reconnect()
+                if _consecutive_failures.get(self.key, 0) >= FULL_RESTART_THRESHOLD:
+                    await _full_client_restart(self.key)
+                else:
+                    await self._force_reconnect()
                 continue
             _register_voice_ok(self.key)
 
     async def _force_reconnect(self):
         async with self._connect_lock:
             try:
-                if self.client.voice_clients: await self.client.voice_clients[0].disconnect(force=True)
+                if self.client.voice_clients:
+                    await self.client.voice_clients[0].disconnect(force=True)
             except Exception: pass
             await asyncio.sleep(RECONNECT_MIN_DELAY)
         await self.connect(MAIN_CHANNEL_ID)
@@ -631,16 +689,10 @@ class Watcher:
                     try: await self.client.voice_clients[0].disconnect(force=True)
                     except Exception: pass
                     await asyncio.sleep(1)
-                
-                # ДЕЖУРНЫЕ ВХОДЯТ БЕЗ МУТА
+
                 await channel.connect(timeout=CONNECT_TIMEOUT, self_deaf=False, self_mute=False)
                 log.info("[%s] подключен к %s (БЕЗ МУТА)", self.name, channel.name)
                 _register_voice_ok(self.key)
-                
-                # Принудительное снятие мута сразу после подключения (на всякий случай)
-                await asyncio.sleep(2)
-                await self._enforce_unmute()
-                
                 return True, "Успешно"
             except Exception as e:
                 return False, str(e)
@@ -668,8 +720,15 @@ class Watcher:
             if not channel: return False
             for _ in range(count):
                 text = _generate_live_text_safe()
-                await channel.send(text)
-                total_messages_sent += 1
+                try:
+                    await channel.send(text)
+                    total_messages_sent += 1
+                except discord.HTTPException as he:
+                    if he.status == 429:
+                        retry = he.response.headers.get("Retry-After") if he.response else None
+                        await asyncio.sleep(float(retry or 5))
+                        continue
+                    raise
                 await asyncio.sleep(random.uniform(1.2, 3.5))
             log.info("[%s] Отправил %d бессмысленных сообщений", self.name, count)
             return True
@@ -691,8 +750,13 @@ async def _enforce_mute(client_name: str):
         me = guild.get_member(client.user.id)
         if me and me.voice:
             if me.voice.self_mute and me.voice.self_deaf: return
-            await guild.change_voice_state(channel=vc.channel, self_mute=True, self_deaf=True)
-            log.info("[%s] принудительный мьют/деаф", client_name.upper())
+            # Переподключение с мутом — надёжно
+            await vc.disconnect(force=True)
+            await asyncio.sleep(1)
+            channel = await _safe_get_channel(client, MAIN_CHANNEL_ID)
+            if channel:
+                await channel.connect(timeout=CONNECT_TIMEOUT, self_deaf=True, self_mute=True)
+                log.info("[%s] переподключен в муте", client_name.upper())
     except Exception as e: log.debug("[%s] enforce_mute: %s", client_name, e)
 
 async def _force_reconnect(client_name: str):
@@ -742,10 +806,12 @@ async def _ensure_connected(client_name: str):
 async def _watchdog_loop(client_name: str):
     client = _get_client(client_name)
     if client is None: return
-    while not _shutdown_event.is_set() and not _warmup_done.get(client_name, False): await asyncio.sleep(1.0)
+    while not _shutdown_event.is_set() and not _client_ready.get(client_name, False):
+        await asyncio.sleep(1.0)
     while not _shutdown_event.is_set():
         interval = _watchdog_intervals.get(client_name, WATCHDOG_BASE_INTERVAL)
-        if _channel_not_found.get(client_name, 0) > 0: interval = max(interval, _channel_backoff.get(client_name, interval))
+        if _channel_not_found.get(client_name, 0) > 0:
+            interval = max(interval, _channel_backoff.get(client_name, interval))
         await asyncio.sleep(interval)
         if _paused.get(client_name, False): continue
         if not _client_ready.get(client_name, False): continue
@@ -754,8 +820,10 @@ async def _watchdog_loop(client_name: str):
             log_event(f"[{client_name}] dead socket")
             _register_voice_drop(client_name, "dead-socket")
             log_reconnect(client_name)
-            if _consecutive_failures.get(client_name, 0) >= FULL_RESTART_THRESHOLD: await _full_client_restart(client_name)
-            else: await _force_reconnect(client_name)
+            if _consecutive_failures.get(client_name, 0) >= FULL_RESTART_THRESHOLD:
+                await _full_client_restart(client_name)
+            else:
+                await _force_reconnect(client_name)
             continue
         if not _is_in_voice(client, MAIN_CHANNEL_ID):
             now = time.time()
@@ -766,8 +834,10 @@ async def _watchdog_loop(client_name: str):
                 continue
             _register_voice_drop(client_name, "not-in-voice")
             log_reconnect(client_name)
-            if _consecutive_failures.get(client_name, 0) >= FULL_RESTART_THRESHOLD: await _full_client_restart(client_name)
-            else: await _ensure_connected(client_name)
+            if _consecutive_failures.get(client_name, 0) >= FULL_RESTART_THRESHOLD:
+                await _full_client_restart(client_name)
+            else:
+                await _ensure_connected(client_name)
             continue
         _register_voice_ok(client_name)
         await _enforce_mute(client_name)
@@ -781,13 +851,17 @@ def _bind_client_events(name, client):
         if name not in _watchdogs_started:
             _watchdogs_started.add(name)
             client.loop.create_task(_watchdog_loop(name))
+        if name not in _status_started:
+            _status_started.add(name)
             client.loop.create_task(status_changer(client, name.upper()))
     @client.event
-    async def on_disconnect(): log.warning("[%s] on_disconnect", name.upper())
+    async def on_disconnect():
+        log.warning("[%s] on_disconnect", name.upper())
     @client.event
     async def on_resumed():
         log.info("[%s] resumed", name.upper())
-        if not _client_ready.get(name, False): await _warmup_guild(name)
+        if not _client_ready.get(name, False):
+            await _warmup_guild(name)
         await _ensure_connected(name)
     @client.event
     async def on_voice_state_update(member, before, after):
@@ -892,7 +966,7 @@ def _build_stats_by_hour() -> str:
     lines = ["🕐 **ВЫЛЕТЫ ПО ЧАСАМ** (всего " + str(total_voice_drops) + ")", ""]
     max_v = max(_drops_by_hour.values()) or 1
     for h in range(24):
-        v = _drops_by_hour[h]
+        v = _drops_by_hour.get(h, 0)
         bar = "█" * int((v / max_v) * 20) if v else ""
         lines.append(f"`{h:02d}:00` {bar} {v}")
     return "\n".join(lines)
@@ -942,158 +1016,195 @@ async def _build_screenshot_file() -> discord.File:
     return discord.File(io.BytesIO(data), filename=f"tt11tt_state_{int(time.time())}.json")
 
 # ====================================================
-# КОМАНДЫ
+# КОМАНДЫ (на всех клиентах, в DM)
 # ====================================================
-@main_client.event
-async def on_message(message):
-    global total_commands_handled, _last_write_at, reserve_manual_enabled
-    if main_client.user is None or message.author.id == main_client.user.id: return
-    if not isinstance(message.channel, discord.DMChannel): return
-    allowed = {USER_ID_EGOIST, USER_ID_EGORIK, MAIN_BOT_USER_ID, main_client.user.id}
-    if message.author.id not in allowed or message.author.id in _blacklist: return
-    content = message.content.strip()
-    parts = content.split()
-    if not parts: return
-    total_commands_handled += 1
-    low = content.lower()
+def _make_on_message(bound_client):
+    async def handler(message):
+        global total_commands_handled, _last_write_at, reserve_manual_enabled
+        if bound_client.user is None or message.author.id == bound_client.user.id: return
+        if not isinstance(message.channel, discord.DMChannel): return
+        allowed = {USER_ID_EGOIST, USER_ID_EGORIK, MAIN_BOT_USER_ID, bound_client.user.id}
+        if message.author.id not in allowed or message.author.id in _blacklist: return
+        content = message.content.strip()
+        parts = content.split()
+        if not parts: return
+        total_commands_handled += 1
+        low = content.lower()
 
-    if low in ("!help", "!commands"): await message.channel.send(_build_help()); return
-    if low in ("!status", "!panel", "!menu"): await message.channel.send(_build_panel()); return
-    if low == "!ping":
-        clients = [("MAIN", main_client), ("SECOND", second_client), ("THIRD", third_client)]
-        if reserve_client is not None: clients.append(("RESERVE", reserve_client))
-        if watcher_egoist: clients.append(("Egoist", watcher_egoist.client))
-        if watcher_egorik: clients.append(("Egorik", watcher_egorik.client))
-        await message.channel.send(_build_ping(clients)); return
-    if low == "!info": await message.channel.send(_build_info()); return
-    if low == "!stats": await message.channel.send(_build_stats()); return
-    if low == "!latency": await message.channel.send(_build_latency()); return
-    if low == "!stats_by_hour": await message.channel.send(_build_stats_by_hour()); return
-    if low.startswith("!logs"):
-        try: n = int(parts[1]) if len(parts) > 1 else 20; n = max(1, min(n, 100))
-        except ValueError: n = 20
-        await message.channel.send(_build_logs(n)); return
-    if low == "!screenshot":
-        f = await _build_screenshot_file()
-        await message.channel.send("📸 Состояние:", file=f); return
+        if low in ("!help", "!commands"): await message.channel.send(_build_help()); return
+        if low in ("!status", "!panel", "!menu"): await message.channel.send(_build_panel()); return
+        if low == "!ping":
+            clients = [("MAIN", main_client), ("SECOND", second_client), ("THIRD", third_client)]
+            if reserve_client is not None: clients.append(("RESERVE", reserve_client))
+            if watcher_egoist: clients.append(("Egoist", watcher_egoist.client))
+            if watcher_egorik: clients.append(("Egorik", watcher_egorik.client))
+            await message.channel.send(_build_ping(clients)); return
+        if low == "!info": await message.channel.send(_build_info()); return
+        if low == "!stats": await message.channel.send(_build_stats()); return
+        if low == "!latency": await message.channel.send(_build_latency()); return
+        if low == "!stats_by_hour": await message.channel.send(_build_stats_by_hour()); return
+        if low.startswith("!logs"):
+            try:
+                n = int(parts[1]) if len(parts) > 1 else 20
+                n = max(1, min(n, 100))
+            except ValueError: n = 20
+            await message.channel.send(_build_logs(n)); return
+        if low == "!screenshot":
+            f = await _build_screenshot_file()
+            await message.channel.send("📸 Состояние:", file=f); return
 
-    if parts[0].lower() == "!write":
-        if len(parts) < 2 or not parts[1].isdigit(): await message.channel.send("⚠️ `!write <число>`"); return
-        count = int(parts[1])
-        if count < 1 or count > MAX_WRITE_COUNT: await message.channel.send(f"⚠️ Диапазон: 1–{MAX_WRITE_COUNT}"); return
-        now = time.time()
-        if now - _last_write_at < WRITE_COOLDOWN: await message.channel.send(f"⏳ Подождите {int(WRITE_COOLDOWN - (now - _last_write_at))}с"); return
-        active = None
-        if watcher_egoist and watcher_egoist.manual_mode: active = watcher_egoist
-        elif watcher_egorik and watcher_egorik.manual_mode: active = watcher_egorik
-        if not active: await message.channel.send("⚠️ Дежурный не включён."); return
-        _last_write_at = now
-        await message.channel.send(f"⏳ {active.name} спамит ({count})...")
-        ok = await active.spam_messages(SPAM_CHANNEL_ID, count)
-        await message.channel.send(f"✅ Готово." if ok else "❌ Ошибка."); return
+        if parts[0].lower() == "!write":
+            if len(parts) < 2 or not parts[1].isdigit():
+                await message.channel.send("⚠️ `!write <число>`"); return
+            count = int(parts[1])
+            if count < 1 or count > MAX_WRITE_COUNT:
+                await message.channel.send(f"⚠️ Диапазон: 1–{MAX_WRITE_COUNT}"); return
+            now = time.time()
+            if now - _last_write_at < WRITE_COOLDOWN:
+                await message.channel.send(f"⏳ Подождите {int(WRITE_COOLDOWN - (now - _last_write_at))}с"); return
+            active = None
+            if watcher_egoist and watcher_egoist.manual_mode: active = watcher_egoist
+            elif watcher_egorik and watcher_egorik.manual_mode: active = watcher_egorik
+            if not active:
+                await message.channel.send("⚠️ Дежурный не включён."); return
+            _last_write_at = now
+            await message.channel.send(f"⏳ {active.name} спамит ({count})...")
+            ok = await active.spam_messages(SPAM_CHANNEL_ID, count)
+            await message.channel.send(f"✅ Готово." if ok else "❌ Ошибка."); return
 
-    if low == "!timely":
-        sent = []
-        for w in (watcher_egoist, watcher_egorik):
-            if w and w.manual_mode and w.client.is_ready():
+        if low == "!timely":
+            sent = []
+            for w in (watcher_egoist, watcher_egorik):
+                if w and w.manual_mode and w.client.is_ready():
+                    try:
+                        ch = await _safe_get_channel(w.client, SPAM_CHANNEL_ID)
+                        if ch: await ch.send("/timely"); sent.append(w.name); log_event(f"[{w.name}] /timely ручной")
+                    except Exception as e: log.error("[%s] timely error: %s", w.name, e)
+            await message.channel.send(f"✅ /timely: {', '.join(sent)}" if sent else "⚠️ Нет активных дежурных."); return
+
+        if parts[0].lower() == "!reserve" and len(parts) >= 2:
+            if reserve_client is None:
+                await message.channel.send("⚠️ RESERVE не настроен."); return
+            if parts[1].lower() == "on":
+                reserve_manual_enabled = True
+                await _ensure_connected("reserve")
+                await message.channel.send("✅ RESERVE включён.")
+            elif parts[1].lower() == "off":
+                reserve_manual_enabled = False
                 try:
-                    ch = await _safe_get_channel(w.client, SPAM_CHANNEL_ID)
-                    if ch: await ch.send("/timely"); sent.append(w.name); log_event(f"[{w.name}] /timely ручной")
-                except Exception as e: log.error("[%s] timely error: %s", w.name, e)
-        await message.channel.send(f"✅ /timely: {', '.join(sent)}" if sent else "⚠️ Нет активных дежурных."); return
+                    if reserve_client.voice_clients:
+                        await reserve_client.voice_clients[0].disconnect(force=True)
+                except Exception: pass
+                await message.channel.send("⛔ RESERVE отключён.")
+            else:
+                await message.channel.send("⚠️ `!reserve on|off`")
+            return
 
-    if parts[0].lower() == "!reserve" and len(parts) >= 2:
-        if reserve_client is None: await message.channel.send("⚠️ RESERVE не настроен."); return
-        if parts[1].lower() == "on":
-            reserve_manual_enabled = True
-            await _ensure_connected("reserve")
-            await message.channel.send("✅ RESERVE включён.")
-        elif parts[1].lower() == "off":
-            reserve_manual_enabled = False
+        if parts[0].lower() in ("!pause", "!resume") and len(parts) >= 2:
+            target = parts[1].lower()
+            if target not in ALL_KEYS or _get_client(target) is None:
+                await message.channel.send(f"⚠️ Неизвестный клиент: `{target}`"); return
+            if parts[0].lower() == "!pause":
+                _paused[target] = True
+                await message.channel.send(f"⏸ {target} на паузе (watchdog игнорирует).")
+            else:
+                _paused[target] = False
+                if target in _CLIENTS:
+                    await _ensure_connected(target)
+                await message.channel.send(f"▶️ {target} возобновлён.")
+            return
+
+        if parts[0].lower() == "!move" and len(parts) >= 3:
+            target, ch_id_s = parts[1].lower(), parts[2]
+            try: ch_id = int(ch_id_s)
+            except ValueError:
+                await message.channel.send("⚠️ channel_id должен быть числом."); return
+            client = _get_client(target)
+            if client is None:
+                await message.channel.send(f"⚠️ Нет клиента `{target}`."); return
+            ch = await _safe_get_channel(client, ch_id)
+            if not ch:
+                await message.channel.send(f"⚠️ Канал `{ch_id}` не найден."); return
             try:
-                if reserve_client.voice_clients: await reserve_client.voice_clients[0].disconnect(force=True)
-            except Exception: pass
-            await message.channel.send("⛔ RESERVE отключён.")
-        else: await message.channel.send("⚠️ `!reserve on|off`")
-        return
-
-    if parts[0].lower() in ("!pause", "!resume") and len(parts) >= 2:
-        target = parts[1].lower()
-        if target not in ALL_KEYS or _get_client(target) is None: await message.channel.send(f"⚠️ Неизвестный клиент: `{target}`"); return
-        if parts[0].lower() == "!pause":
-            _paused[target] = True
-            await message.channel.send(f"⏸ {target} на паузе (watchdog игнорирует).")
-        else:
-            _paused[target] = False
-            await _ensure_connected(target) if target in _CLIENTS else None
-            await message.channel.send(f"▶️ {target} возобновлён.")
-        return
-
-    if parts[0].lower() == "!move" and len(parts) >= 3:
-        target, ch_id_s = parts[1].lower(), parts[2]
-        try: ch_id = int(ch_id_s)
-        except ValueError: await message.channel.send("⚠️ channel_id должен быть числом."); return
-        client = _get_client(target)
-        if client is None: await message.channel.send(f"⚠️ Нет клиента `{target}`."); return
-        ch = await _safe_get_channel(client, ch_id)
-        if not ch: await message.channel.send(f"⚠️ Канал `{ch_id}` не найден."); return
-        try:
-            if client.voice_clients: await client.voice_clients[0].move_to(ch)
-            else: await ch.connect(timeout=CONNECT_TIMEOUT, self_deaf=True, self_mute=True)
-            await message.channel.send(f"✅ {target} → `{ch_id}`")
-        except Exception as e: await message.channel.send(f"❌ {e}")
-        return
-
-    if parts[0].lower() == "!massmove" and len(parts) >= 2:
-        try: ch_id = int(parts[1])
-        except ValueError: await message.channel.send("⚠️ channel_id должен быть числом."); return
-        moved, errors = 0, []
-        for name in _CLIENTS:
-            client = _CLIENTS[name]
-            try:
-                ch = await _safe_get_channel(client, ch_id)
-                if not ch: errors.append(name); continue
                 if client.voice_clients: await client.voice_clients[0].move_to(ch)
                 else: await ch.connect(timeout=CONNECT_TIMEOUT, self_deaf=True, self_mute=True)
-                moved += 1
-            except Exception as e: errors.append(f"{name}: {e}")
-        await message.channel.send(f"✅ Перемещено: {moved}" + (f"\n⚠️ Ошибки: {len(errors)}" if errors else "")); return
-
-    if parts[0].lower() == "!blacklist" and len(parts) >= 2:
-        if parts[1].lower() == "list":
-            if _blacklist: await message.channel.send("🚫 Blacklist: " + ", ".join(f"`{u}`" for u in _blacklist))
-            else: await message.channel.send("Blacklist пуст.")
+                await message.channel.send(f"✅ {target} → `{ch_id}`")
+            except Exception as e:
+                await message.channel.send(f"❌ {e}")
             return
-        if parts[1].lower() == "remove" and len(parts) >= 3:
+
+        if parts[0].lower() == "!massmove" and len(parts) >= 2:
+            try: ch_id = int(parts[1])
+            except ValueError:
+                await message.channel.send("⚠️ channel_id должен быть числом."); return
+            moved, errors = 0, []
+            for name in _CLIENTS:
+                client = _CLIENTS[name]
+                try:
+                    ch = await _safe_get_channel(client, ch_id)
+                    if not ch:
+                        errors.append(name); continue
+                    if client.voice_clients: await client.voice_clients[0].move_to(ch)
+                    else: await ch.connect(timeout=CONNECT_TIMEOUT, self_deaf=True, self_mute=True)
+                    moved += 1
+                except Exception as e:
+                    errors.append(f"{name}: {e}")
+            await message.channel.send(f"✅ Перемещено: {moved}" + (f"\n⚠️ Ошибки: {len(errors)}" if errors else "")); return
+
+        if parts[0].lower() == "!blacklist" and len(parts) >= 2:
+            if parts[1].lower() == "list":
+                if _blacklist:
+                    await message.channel.send("🚫 Blacklist: " + ", ".join(f"`{u}`" for u in _blacklist))
+                else:
+                    await message.channel.send("Blacklist пуст.")
+                return
+            if parts[1].lower() == "remove" and len(parts) >= 3:
+                try:
+                    uid = int(parts[2]); _blacklist.discard(uid)
+                    await message.channel.send(f"✅ Убран из blacklist: `{uid}`")
+                except ValueError:
+                    await message.channel.send("⚠️ user_id должен быть числом.")
+                return
             try:
-                uid = int(parts[2]); _blacklist.discard(uid); await message.channel.send(f"✅ Убран из blacklist: `{uid}`")
-            except ValueError: await message.channel.send("⚠️ user_id должен быть числом.")
+                uid = int(parts[1]); _blacklist.add(uid)
+                await message.channel.send(f"🚫 Добавлен в blacklist: `{uid}`")
+            except ValueError:
+                await message.channel.send("⚠️ Использование: `!blacklist <user_id>` / `list` / `remove <id>`")
             return
-        try:
-            uid = int(parts[1]); _blacklist.add(uid); await message.channel.send(f"🚫 Добавлен в blacklist: `{uid}`")
-        except ValueError: await message.channel.send("⚠️ Использование: `!blacklist <user_id>` / `list` / `remove <id>`")
-        return
 
-    if low == "!all on":
-        for w in (watcher_egoist, watcher_egorik):
-            if w: w.disabled, w.manual_mode = False, True; await w.connect(MAIN_CHANNEL_ID)
-        await message.channel.send("✅ Все включены."); return
-    if low == "!all off":
-        for w in (watcher_egoist, watcher_egorik):
-            if w: w.manual_mode, w.disabled = False, True; await w.disconnect()
-        await message.channel.send("⛔ Все выключены."); return
-    if len(parts) >= 2:
-        cmd, t = parts[0].lower(), parts[1].lower()
-        w = watcher_egoist if t == "egoist" else (watcher_egorik if t == "egorik" else None)
-        if w:
-            if cmd == "!on":
-                w.disabled, w.manual_mode = False, True
-                ok, msg = await w.connect(MAIN_CHANNEL_ID)
-                await message.channel.send(f"✅ {t} вкл ({msg})." if ok else f"⚠️ {t}: {msg}")
-            elif cmd == "!off":
-                w.manual_mode, w.disabled = False, True
-                await w.disconnect()
-                await message.channel.send(f"⚙️ {t} выключен.")
+        if low == "!all on":
+            for w in (watcher_egoist, watcher_egorik):
+                if w:
+                    w.disabled, w.manual_mode = False, True
+                    await w.connect(MAIN_CHANNEL_ID)
+            await message.channel.send("✅ Все включены."); return
+        if low == "!all off":
+            for w in (watcher_egoist, watcher_egorik):
+                if w:
+                    w.manual_mode, w.disabled = False, True
+                    await w.disconnect()
+            await message.channel.send("⛔ Все выключены."); return
+        if len(parts) >= 2:
+            cmd, t = parts[0].lower(), parts[1].lower()
+            w = watcher_egoist if t == "egoist" else (watcher_egorik if t == "egorik" else None)
+            if w:
+                if cmd == "!on":
+                    w.disabled, w.manual_mode = False, True
+                    ok, msg = await w.connect(MAIN_CHANNEL_ID)
+                    await message.channel.send(f"✅ {t} вкл ({msg})." if ok else f"⚠️ {t}: {msg}")
+                elif cmd == "!off":
+                    w.manual_mode, w.disabled = False, True
+                    await w.disconnect()
+                    await message.channel.send(f"⚙️ {t} выключен.")
+    return handler
+
+# Привязываем on_message ко всем клиентам (управление в DM)
+for _name, _client in _CLIENTS.items():
+    _client.event(_make_on_message(_client))
+if watcher_egoist:
+    watcher_egoist.client.event(_make_on_message(watcher_egoist.client))
+if watcher_egorik:
+    watcher_egorik.client.event(_make_on_message(watcher_egorik.client))
 
 # ====================================================
 # ЗАПУСК
@@ -1114,6 +1225,11 @@ async def main():
     log.info("Инициализация...")
     watcher_egoist = Watcher(TOKEN_EGOIST, USER_ID_EGOIST, "Egoist") if TOKEN_EGOIST else None
     watcher_egorik = Watcher(TOKEN_EGORIK, USER_ID_EGORIK, "Egorik") if TOKEN_EGORIK else None
+    # on_message для watcher'ов привязываем уже после создания
+    if watcher_egoist:
+        watcher_egoist.client.event(_make_on_message(watcher_egoist.client))
+    if watcher_egorik:
+        watcher_egorik.client.event(_make_on_message(watcher_egorik.client))
 
     tasks = []
     if TOKEN_MAIN: tasks.append(safe_start(main_client, TOKEN_MAIN, "MAIN"))
