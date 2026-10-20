@@ -1,5 +1,5 @@
 # ====================================================
-# TT11TT — Discord боты (v49 - Без проверки ID в ЛС)
+# TT11TT — Discord боты (v50 - Рабочий ответ и мут)
 # ====================================================
 import os
 import sys
@@ -71,9 +71,6 @@ TOKEN_RESERVE = get_env_str("DISCORD_TOKEN_6")
 
 MAIN_CHANNEL_ID = get_env_int("VOICE_CHANNEL_ID")
 GUILD_ID = get_env_int("GUILD_ID")
-USER_ID_EGOIST = get_env_int("USER_ID_1")
-USER_ID_EGORIK = get_env_int("USER_ID_2")
-MAIN_BOT_USER_ID = get_env_int("MAIN_BOT_USER_ID", 0)
 
 RENDER_URL = get_env_str("RENDER_URL") or "https://tt11tt-1.onrender.com"
 STATUS_ROTATION = get_env_bool("STATUS_ROTATION", False)
@@ -831,12 +828,7 @@ def _make_on_message(bound_client):
         if bound_client.user is None or message.author.id == bound_client.user.id: 
             return
             
-        # ВРЕМЕННО РАЗРЕШАЕМ ВСЕМ (чтобы вы могли управлять с любого аккаунта)
-        # Если нужно ограничить, раскомментируйте строки ниже и впишите ID.
-        # allowed = {USER_ID_EGOIST, USER_ID_EGORIK, MAIN_BOT_USER_ID, bound_client.user.id}
-        # if message.author.id not in allowed or message.author.id in _blacklist: 
-        #     return
-            
+        # РАЗРЕШАЕМ ВСЕМ (чтобы вы могли управлять с любого аккаунта)
         if message.author.id in _blacklist:
             return
             
@@ -868,14 +860,14 @@ def _make_on_message(bound_client):
                     w.manual_mode = True
                     ok, msg = await w.connect(MAIN_CHANNEL_ID)
                     if ok:
-                        await message.channel.send(f"✅ Дежурный **{t}** успешно зашёл в канал и встал на пост.")
+                        await message.channel.send(f"✅ {t} вкл (Успешно).")
                     else:
                         await message.channel.send(f"❌ Ошибка при подключении {t}: {msg}")
                 else:
                     w.manual_mode = False
                     w.disabled = True
                     await w.disconnect()
-                    await message.channel.send(f"⚙️ Дежурный **{t}** снят с поста.")
+                    await message.channel.send(f"⚙️ {t} выкл.")
                 return
 
         # --- ОСТАЛЬНЫЕ КОМАНДЫ ---
@@ -984,8 +976,8 @@ async def safe_start(client, token, name):
 async def main():
     global watcher_egoist, watcher_egorik
     log.info("Инициализация...")
-    watcher_egoist = Watcher(TOKEN_EGOIST, USER_ID_EGOIST, "Egoist") if TOKEN_EGOIST else None
-    watcher_egorik = Watcher(TOKEN_EGORIK, USER_ID_EGORIK, "Egorik") if TOKEN_EGORIK else None
+    watcher_egoist = Watcher(TOKEN_EGOIST, get_env_int("USER_ID_1"), "Egoist") if TOKEN_EGOIST else None
+    watcher_egorik = Watcher(TOKEN_EGORIK, get_env_int("USER_ID_2"), "Egorik") if TOKEN_EGORIK else None
     if watcher_egoist:
         watcher_egoist.client.event(_make_on_message(watcher_egoist.client))
     if watcher_egorik:
