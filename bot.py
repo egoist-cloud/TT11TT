@@ -1,5 +1,5 @@
 # ====================================================
-# TT11TT — Discord боты (v44 - Final Stable)
+# TT11TT — Discord боты (v46 - Custom Tokens & Final Fix)
 # ====================================================
 import os
 import sys
@@ -14,7 +14,6 @@ import json
 import io
 import traceback
 from collections import deque
-from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime, timezone, timedelta
 
 import aiohttp
@@ -62,12 +61,13 @@ def get_env_bool(name, default=False):
     if val is None: return default
     return val.lower() in ("1", "true", "yes", "on")
 
-TOKEN_MAIN = get_env_str("DISCORD_TOKEN_1")
-TOKEN_SECOND = get_env_str("DISCORD_TOKEN_4")
+# РАСПРЕДЕЛЕНИЕ ПО ВАШЕМУ ЗАПРОСУ:
+TOKEN_EGOIST = get_env_str("DISCORD_TOKEN_1") # 1 - Egoist
+TOKEN_EGORIK = get_env_str("DISCORD_TOKEN_2") # 2 - Egorik
+TOKEN_MAIN = get_env_str("DISCORD_TOKEN_3")   # 3 - commback
+TOKEN_SECOND = get_env_str("DISCORD_TOKEN_4") # 4 - asiris
 TOKEN_THIRD = get_env_str("DISCORD_TOKEN_5")
 TOKEN_RESERVE = get_env_str("DISCORD_TOKEN_6")
-TOKEN_EGOIST = get_env_str("DISCORD_TOKEN_2")
-TOKEN_EGORIK = get_env_str("DISCORD_TOKEN_3")
 
 MAIN_CHANNEL_ID = get_env_int("VOICE_CHANNEL_ID")
 GUILD_ID = get_env_int("GUILD_ID")
@@ -78,7 +78,7 @@ MAIN_BOT_USER_ID = get_env_int("MAIN_BOT_USER_ID", 0)
 RENDER_URL = get_env_str("RENDER_URL") or "https://tt11tt-1.onrender.com"
 STATUS_ROTATION = get_env_bool("STATUS_ROTATION", False)
 SPAM_CHANNEL_ID = 1270672504582832150
-REPORT_CHANNEL_ID = 1241013075151425650 # Канал #репорты
+REPORT_CHANNEL_ID = 1241013075151425650
 
 # ====================================================
 # КОНСТАНТЫ
@@ -195,85 +195,6 @@ _CLIENTS = {"main": main_client, "second": second_client, "third": third_client}
 if reserve_client is not None: _CLIENTS["reserve"] = reserve_client
 
 _LOCKS = {"main": _main_lock, "second": _second_lock, "third": _third_lock, "reserve": _reserve_lock}
-
-# ====================================================
-# ВЕБ-СЕРВЕР (Встроенный, для проверки)
-# ====================================================
-def _prometheus_metrics() -> str:
-    lines = ["# HELP tt11tt_reconnects_total Всего реконнектов", "# TYPE tt11tt_reconnects_total counter"]
-    for k, v in reconnect_stats.items(): lines.append(f'tt11tt_reconnects_total{{client="{k}"}} {v}')
-    lines.append("# HELP tt11tt_voice_uptime_seconds Uptime в войсе")
-    lines.append("# TYPE tt11tt_voice_uptime_seconds counter")
-    for k, v in _voice_uptime.items(): lines.append(f'tt11tt_voice_uptime_seconds{{client="{k}"}} {int(v)}')
-    lines.append("# HELP tt11tt_voice_drops_total Всего вылетов")
-    lines.append("# TYPE tt11tt_voice_drops_total counter")
-    lines.append(f"tt11tt_voice_drops_total {total_voice_drops}")
-    lines.append("# HELP tt11tt_client_ready Клиент готов")
-    lines.append("# TYPE tt11tt_client_ready gauge")
-    for k, v in _client_ready.items(): lines.append(f'tt11tt_client_ready{{client="{k}"}} {1 if v else 0}')
-    lines.append("# HELP tt11tt_in_voice В голосовом канале")
-    lines.append("# TYPE tt11tt_in_voice gauge")
-    for k in _CLIENTS:
-        in_v = _is_in_voice(_CLIENTS[k], MAIN_CHANNEL_ID)
-        lines.append(f'tt11tt_in_voice{{client="{k}"}} {1 if in_v else 0}')
-    lines.append("# HELP tt11tt_uptime_seconds Uptime процесса")
-    lines.append("# TYPE tt11tt_uptime_seconds gauge")
-    lines.append(f"tt11tt_uptime_seconds {int(time.time() - start_time)}")
-    return "\n".join(lines) + "\n"
-
-def _dashboard_html() -> str:
-    rows = []
-    for k in _CLIENTS:
-        c = _CLIENTS[k]
-        ready = "🟢" if c.is_ready() else "🔴"
-        ch = _voice_channel_id(c)
-        in_v = "🟢" if ch == MAIN_CHANNEL_ID else ("🟡" if ch else "🔴")
-        try: lat = f"{c.latency * 1000:.0f} ms"
-        except Exception: lat = "n/a"
-        upt = fmt_duration(_voice_uptime.get(k, 0))
-        paused = "⏸" if _paused.get(k) else ""
-        rows.append(f"<tr><td>{k.upper()} {paused}</td><td>{ready}</td><td>{in_v} {ch}</td><td>{lat}</td><td>{upt}</td><td>{reconnect_stats.get(k, 0)}</td></tr>")
-    for w_name, w in (("EGOIST", watcher_egoist), ("EGORIK", watcher_egorik)):
-        if not w: continue
-        c = w.client
-        ready = "🟢" if c.is_ready() else "🔴"
-        ch = _voice_channel_id(c)
-        in_v = "🟢" if ch == MAIN_CHANNEL_ID else ("🟡" if ch else "🔴")
-        try: lat = f"{c.latency * 1000:.0f} ms"
-        except Exception: lat = "n/a"
-        state = "🟢 вкл" if w.manual_mode else "🔴 выкл"
-        rows.append(f"<tr><td>{w_name} ({state})</td><td>{ready}</td><td>{in_v} {ch}</td><td>{lat}</td><td>{fmt_duration(_voice_uptime.get(w.key, 0))}</td><td>{reconnect_stats.get(w.key, 0)}</td></tr>")
-    events_html = "".join(f"<li>{html.escape(e)}</li>" for e in list(event_log)[-20:])
-    return f"""<!DOCTYPE html><html><head><meta charset="utf-8"><title>TT11TT Dashboard</title><meta http-equiv="refresh" content="5"><style>body{{font-family:monospace;background:#1e1e1e;color:#e0e0e0;padding:20px;}}h1{{color:#4ec9b0;}}table{{border-collapse:collapse;margin:20px 0;}}th,td{{border:1px solid #444;padding:8px 12px;text-align:left;}}th{{background:#2d2d2d;color:#4ec9b0;}}tr:nth-child(even){{background:#252525;}}.stats{{display:flex;gap:20px;flex-wrap:wrap;}}.stat{{background:#2d2d2d;padding:10px 20px;border-radius:6px;}}.stat b{{color:#4ec9b0;font-size:1.4em;}}ul{{max-height:300px;overflow-y:auto;background:#252525;padding:10px 30px;}}</style></head><body><h1>🎛 TT11TT Dashboard</h1><div class="stats"><div class="stat">Uptime<br><b>{fmt_uptime()}</b></div><div class="stat">Вылетов<br><b>{total_voice_drops}</b></div><div class="stat">Сообщений<br><b>{total_messages_sent}</b></div><div class="stat">Команд<br><b>{total_commands_handled}</b></div></div><h2>Клиенты</h2><table><tr><th>Клиент</th><th>Ready</th><th>Войс</th><th>Latency</th><th>Uptime</th><th>Реконнектов</th></tr>{''.join(rows)}</table><h2>Последние события</h2><ul>{events_html}</ul></body></html>"""
-
-class HealthHandler(BaseHTTPRequestHandler):
-    def _respond(self, code, body, ctype="text/plain; charset=utf-8"):
-        self.send_response(code)
-        self.send_header("Content-type", ctype)
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-    def do_GET(self):
-        try:
-            if self.path.startswith("/status"):
-                payload = {"ok": True, "uptime_sec": int(time.time() - start_time), "reconnects": reconnect_stats, "voice_uptime": {k: int(v) for k, v in _voice_uptime.items()}, "voice_drops": total_voice_drops, "messages_sent": total_messages_sent, "commands": total_commands_handled, "channel_not_found": _channel_not_found, "client_ready": _client_ready, "paused": _paused, "reserve_enabled": reserve_manual_enabled}
-                self._respond(200, json.dumps(payload).encode(), "application/json")
-            elif self.path.startswith("/events"): self._respond(200, json.dumps(list(event_log)).encode(), "application/json")
-            elif self.path.startswith("/healthz"):
-                ready_count = sum(1 for k in _CLIENTS if _CLIENTS[k].is_ready())
-                voice_count = sum(1 for k in _CLIENTS if _is_in_voice(_CLIENTS[k], MAIN_CHANNEL_ID))
-                total = len(_CLIENTS)
-                ok = (ready_count == total and voice_count == total)
-                code = 200 if ok else 503
-                self._respond(code, json.dumps({"ok": ok, "ready": ready_count, "voice": voice_count, "total": total}).encode(), "application/json")
-            elif self.path.startswith("/health"): self._respond(200, b"OK")
-            elif self.path.startswith("/metrics"): self._respond(200, _prometheus_metrics().encode(), "text/plain; version=0.0.4")
-            elif self.path.startswith("/dashboard") or self.path == "/": self._respond(200, _dashboard_html().encode(), "text/html; charset=utf-8")
-            else: self._respond(200, b"Bot is running")
-        except Exception as e:
-            log.error("Web Handler Error: %s", e)
-            self._respond(500, b"Internal Server Error")
-    def log_message(self, *args): pass
 
 # ====================================================
 # УТИЛИТЫ И ОТЧЕТЫ
@@ -442,7 +363,7 @@ async def status_changer(client, name):
                 else:
                     activity = discord.Activity(type=discord.ActivityType.watching, name=random.choice(WATCHING_STATUSES))
                 await client.change_presence(activity=activity)
-        except Exception as e: pass
+        except Exception: pass
         try: await asyncio.wait_for(_shutdown_event.wait(), timeout=STATUS_INTERVAL)
         except asyncio.TimeoutError: pass
 
@@ -900,19 +821,6 @@ def _build_info() -> str:
 def _build_help() -> str:
     return "📖 **HELP**\n**Дежурные:** `!on egoist` / `!on egorik`, `!off egoist` / `!off egorik`\n**Инфо:** `!panel` `!ping` `!stats` `!info` `!latency`\n**Диагностика:** `!logs <n>` `!screenshot` `!stats_by_hour`\n**Резерв:** `!reserve on|off`\n**Пауза:** `!pause <client>` `!resume <client>`"
 
-async def _build_screenshot_file() -> discord.File:
-    payload = {
-        "generated_at": datetime.now(timezone.utc).isoformat(), "uptime": fmt_uptime(), "uptime_sec": int(time.time() - start_time),
-        "reconnects": reconnect_stats, "voice_uptime": {k: int(v) for k, v in _voice_uptime.items()},
-        "voice_drops": total_voice_drops, "drops_by_hour": _drops_by_hour, "channel_not_found": _channel_not_found,
-        "paused": _paused, "reserve_enabled": reserve_manual_enabled,
-        "clients": {k: {"user": str(_CLIENTS[k].user) if _CLIENTS[k].user else None, "ready": _CLIENTS[k].is_ready(), "channel": _voice_channel_id(_CLIENTS[k]), "latency_ms": (_CLIENTS[k].latency * 1000 if _CLIENTS[k].is_ready() else None)} for k in _CLIENTS},
-        "watchers": {w.name: {"manual": w.manual_mode, "disabled": w.disabled, "ready": w.client.is_ready(), "channel": _voice_channel_id(w.client)} for w in (watcher_egoist, watcher_egorik) if w},
-        "events": list(event_log),
-    }
-    data = json.dumps(payload, indent=2, ensure_ascii=False).encode("utf-8")
-    return discord.File(io.BytesIO(data), filename=f"tt11tt_state_{int(time.time())}.json")
-
 # ====================================================
 # КОМАНДЫ
 # ====================================================
@@ -984,9 +892,6 @@ def _make_on_message(bound_client):
                 n = max(1, min(n, 100))
             except ValueError: n = 20
             await message.channel.send(_build_logs(n)); return
-        if low == "!screenshot":
-            f = await _build_screenshot_file()
-            await message.channel.send("📸 Состояние:", file=f); return
 
         if parts[0].lower() in ("!write", "!спам"):
             if len(parts) < 2 or not parts[1].isdigit():
