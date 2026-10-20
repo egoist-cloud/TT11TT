@@ -26,12 +26,6 @@ services:
         sync: false
       - key: USER_ID_2
         sync: false
-      - key: USER_ID_3
-        sync: false
-      - key: USER_ID_4
-        sync: false
-      - key: MAIN_BOT_USER_ID
-        sync: false
       - key: GUILD_ID
         sync: false
       - key: RENDER_URL
