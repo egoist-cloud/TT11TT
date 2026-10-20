@@ -1,5 +1,5 @@
 # ====================================================
-# TT11TT — Discord боты (v46 - Custom Tokens & Final Fix)
+# TT11TT — Discord боты (v47 - Stable Voice & Commands)
 # ====================================================
 import os
 import sys
@@ -14,6 +14,7 @@ import json
 import io
 import traceback
 from collections import deque
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime, timezone, timedelta
 
 import aiohttp
