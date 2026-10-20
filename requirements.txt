@@ -1,4 +1,5 @@
-discord.py-self @ git+https://github.com/dolfies/discord.py-self
+staypresent[prod]
+discord.py-self @ git+https://github.com/dolfies/discord.py-self@master
 aiohttp
 PyNaCl
 davey
