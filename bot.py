@@ -1,5 +1,5 @@
 # ====================================================
-# TT11TT — Discord боты (v43 - Stable & Command Fix)
+# TT11TT — Discord боты (v44 - Final Stable)
 # ====================================================
 import os
 import sys
@@ -13,7 +13,6 @@ import string
 import json
 import io
 import traceback
-import threading
 from collections import deque
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime, timezone, timedelta
@@ -79,7 +78,7 @@ MAIN_BOT_USER_ID = get_env_int("MAIN_BOT_USER_ID", 0)
 RENDER_URL = get_env_str("RENDER_URL") or "https://tt11tt-1.onrender.com"
 STATUS_ROTATION = get_env_bool("STATUS_ROTATION", False)
 SPAM_CHANNEL_ID = 1270672504582832150
-REPORT_CHANNEL_ID = 1241013075151425650
+REPORT_CHANNEL_ID = 1241013075151425650 # Канал #репорты
 
 # ====================================================
 # КОНСТАНТЫ
@@ -198,7 +197,7 @@ if reserve_client is not None: _CLIENTS["reserve"] = reserve_client
 _LOCKS = {"main": _main_lock, "second": _second_lock, "third": _third_lock, "reserve": _reserve_lock}
 
 # ====================================================
-# ВЕБ-СЕРВЕР (Для работы на Render)
+# ВЕБ-СЕРВЕР (Встроенный, для проверки)
 # ====================================================
 def _prometheus_metrics() -> str:
     lines = ["# HELP tt11tt_reconnects_total Всего реконнектов", "# TYPE tt11tt_reconnects_total counter"]
@@ -276,15 +275,6 @@ class HealthHandler(BaseHTTPRequestHandler):
             self._respond(500, b"Internal Server Error")
     def log_message(self, *args): pass
 
-def run_web_server():
-    port = int(os.getenv("PORT", 10000))
-    log.info("Запуск веб-сервера на порту %d", port)
-    try:
-        server = HTTPServer(("0.0.0.0", port), HealthHandler)
-        log.info("Веб-сервер успешно запущен на 0.0.0.0:%d", port)
-        server.serve_forever()
-    except Exception as e: log.error("Web server error: %s", e)
-
 # ====================================================
 # УТИЛИТЫ И ОТЧЕТЫ
 # ====================================================
@@ -343,7 +333,7 @@ async def _safe_get_channel(client, channel_id):
     try:
         ch = await client.fetch_channel(channel_id)
         if ch is not None: return ch
-    except Exception as e: log.debug("fetch_channel(%s) failed: %s", channel_id, e)
+    except Exception: pass
     if GUILD_ID:
         try:
             guild = client.get_guild(GUILD_ID)
@@ -356,13 +346,13 @@ async def _safe_get_channel(client, channel_id):
                 try:
                     ch = await guild.fetch_channel(channel_id)
                     if ch is not None: return ch
-                except Exception as e: log.debug("guild.fetch_channel(%s) failed: %s", channel_id, e)
+                except Exception: pass
                 try:
                     channels = await guild.fetch_channels()
                     for c in channels:
                         if c.id == channel_id: return c
-                except Exception as e: log.debug("guild.fetch_channels failed: %s", e)
-        except Exception as e: log.debug("fetch_guild(%s) failed: %s", GUILD_ID, e)
+                except Exception: pass
+        except Exception: pass
     return None
 
 def _is_dead_socket(client) -> bool:
@@ -452,7 +442,7 @@ async def status_changer(client, name):
                 else:
                     activity = discord.Activity(type=discord.ActivityType.watching, name=random.choice(WATCHING_STATUSES))
                 await client.change_presence(activity=activity)
-        except Exception as e: log.debug("[%s] status_changer: %s", name, e)
+        except Exception as e: pass
         try: await asyncio.wait_for(_shutdown_event.wait(), timeout=STATUS_INTERVAL)
         except asyncio.TimeoutError: pass
 
@@ -561,7 +551,6 @@ class Watcher:
             if me is None or member.id != me.id: return
             if not self.manual_mode or self.disabled: return
             
-            # Игнорируем любые обновления в том же канале (например, смена mute)
             if before.channel and after.channel and before.channel.id == after.channel.id:
                 return
                 
@@ -632,7 +621,6 @@ class Watcher:
                     except Exception: pass
                     await asyncio.sleep(2)
 
-                # Заходим сразу в муте, больше не трогаем состояние
                 await channel.connect(timeout=CONNECT_TIMEOUT, self_deaf=True, self_mute=True)
                 log.info("[%s] подключен к %s", self.name, channel.name)
                 _register_voice_ok(self.key)
@@ -710,7 +698,7 @@ async def _ensure_connected(client_name: str):
             await asyncio.sleep(3)
             
         try:
-            vc = await channel.connect(timeout=CONNECT_TIMEOUT, self_deaf=True, self_mute=True)
+            await channel.connect(timeout=CONNECT_TIMEOUT, self_deaf=True, self_mute=True)
             log.info("[%s] подключен к %s", client_name.upper(), channel.name)
             _register_voice_ok(client_name)
         except Exception as e:
@@ -779,7 +767,6 @@ def _bind_client_events(name, client):
         me = client.user
         if me is None or member.id != me.id: return
         
-        # Игнорируем обновления в том же канале
         if before.channel and after.channel and before.channel.id == after.channel.id:
             return
             
@@ -847,7 +834,7 @@ def _build_panel() -> str:
         else: rstat = f"🟡 другой `{ch}`"
         lines.append(f"  • **RESERVE**: {paused}{rstat}")
     else: lines.append("  • **RESERVE**: ⚪ нет токена")
-    lines += ["", f"**Сообщений:** {total_messages_sent} | **Команд:** {total_commands_handled}", "", "**Команды:** `!panel` `!ping` `!stats` `!logs` `!info` `!help`", "`!screenshot` `!latency` `!stats_by_hour`", "`!on`/`!off` `egoist`/`egorik`, `!all on/off`", "`!reserve on/off`, `!pause`/`!resume <client>`", "`!write <n>`, `!timely`, `!move`, `!massmove`, `!blacklist`"]
+    lines += ["", f"**Сообщений:** {total_messages_sent} | **Команд:** {total_commands_handled}", "", "**Управление:** `!on egoist` / `!on egorik` (включить)", "`!off egoist` / `!off egorik` (выключить)", "`!panel` `!ping` `!stats` `!info` `!help`"]
     return "\n".join(lines)
 
 def _build_ping(client_list) -> str:
@@ -911,7 +898,7 @@ def _build_info() -> str:
     return "\n".join(lines)
 
 def _build_help() -> str:
-    return "📖 **HELP**\n**Инфо:** `!panel` `!ping` `!stats` `!info` `!latency`\n**Диагностика:** `!logs <n>` `!screenshot` `!stats_by_hour`\n**Дежурные:** `!on/!off egoist|egorik`, `!all on/off`\n**Резерв:** `!reserve on|off`\n**Пауза:** `!pause <client>` `!resume <client>`\n**Перемещение:** `!move <client> <ch_id>` `!massmove <ch_id>`\n**Блеклист:** `!blacklist <user_id>` / `!blacklist list` / `!blacklist remove <id>`\n**Прочее:** `!write <n>` `!timely`"
+    return "📖 **HELP**\n**Дежурные:** `!on egoist` / `!on egorik`, `!off egoist` / `!off egorik`\n**Инфо:** `!panel` `!ping` `!stats` `!info` `!latency`\n**Диагностика:** `!logs <n>` `!screenshot` `!stats_by_hour`\n**Резерв:** `!reserve on|off`\n**Пауза:** `!pause <client>` `!resume <client>`"
 
 async def _build_screenshot_file() -> discord.File:
     payload = {
@@ -933,11 +920,9 @@ def _make_on_message(bound_client):
     async def handler(message):
         global total_commands_handled, _last_write_at, reserve_manual_enabled
         
-        # Игнорируем свои сообщения
         if bound_client.user is None or message.author.id == bound_client.user.id: 
             return
             
-        # Проверка на белый список (кому разрешено управлять)
         allowed = {USER_ID_EGOIST, USER_ID_EGORIK, MAIN_BOT_USER_ID, bound_client.user.id}
         if message.author.id not in allowed or message.author.id in _blacklist: 
             return
@@ -946,15 +931,41 @@ def _make_on_message(bound_client):
         parts = content.split()
         if not parts: return
         
-        # Разрешаем команды и в ЛС, и в канале #репорты
+        # РАЗРЕШАЕМ КОМАНДЫ ТОЛЬКО В КАНАЛЕ #РЕПОРТЫ И В ЛС
         is_dm = isinstance(message.channel, discord.DMChannel)
-        is_report_channel = message.channel.id == REPORT_CHANNEL_ID
+        is_report_channel = (message.channel.id == 1241013075151425650)
+        
         if not is_dm and not is_report_channel:
             return
 
         total_commands_handled += 1
         low = content.lower()
 
+        # --- УПРАВЛЕНИЕ ДЕЖУРНЫМИ ---
+        if len(parts) >= 2:
+            cmd, t = parts[0].lower(), parts[1].lower()
+            if t in ("egoist", "egorik") and cmd in ("!on", "!off", "!вкл", "!выкл"):
+                w = watcher_egoist if t == "egoist" else watcher_egorik
+                if not w:
+                    await message.channel.send(f"⚠️ Дежурный `{t}` не настроен.")
+                    return
+                
+                if cmd in ("!on", "!вкл"):
+                    w.disabled = False
+                    w.manual_mode = True
+                    ok, msg = await w.connect(MAIN_CHANNEL_ID)
+                    if ok:
+                        await message.channel.send(f"✅ Дежурный **{t}** успешно зашёл в канал и встал на пост.")
+                    else:
+                        await message.channel.send(f"❌ Ошибка при подключении {t}: {msg}")
+                else:
+                    w.manual_mode = False
+                    w.disabled = True
+                    await w.disconnect()
+                    await message.channel.send(f"⚙️ Дежурный **{t}** снят с поста.")
+                return
+
+        # --- ОСТАЛЬНЫЕ КОМАНДЫ ---
         if low in ("!help", "!commands"): await message.channel.send(_build_help()); return
         if low in ("!status", "!panel", "!menu"): await message.channel.send(_build_panel()); return
         if low == "!ping":
@@ -977,7 +988,7 @@ def _make_on_message(bound_client):
             f = await _build_screenshot_file()
             await message.channel.send("📸 Состояние:", file=f); return
 
-        if parts[0].lower() == "!write":
+        if parts[0].lower() in ("!write", "!спам"):
             if len(parts) < 2 or not parts[1].isdigit():
                 await message.channel.send("⚠️ `!write <число>`"); return
             count = int(parts[1])
@@ -995,16 +1006,6 @@ def _make_on_message(bound_client):
             await message.channel.send(f"⏳ {active.name} спамит ({count})...")
             ok = await active.spam_messages(SPAM_CHANNEL_ID, count)
             await message.channel.send(f"✅ Готово." if ok else "❌ Ошибка."); return
-
-        if low == "!timely":
-            sent = []
-            for w in (watcher_egoist, watcher_egorik):
-                if w and w.manual_mode and w.client.is_ready():
-                    try:
-                        ch = await _safe_get_channel(w.client, SPAM_CHANNEL_ID)
-                        if ch: await ch.send("/timely"); sent.append(w.name); log_event(f"[{w.name}] /timely ручной")
-                    except Exception as e: log.error("[%s] timely error: %s", w.name, e)
-            await message.channel.send(f"✅ /timely: {', '.join(sent)}" if sent else "⚠️ Нет активных дежурных."); return
 
         if parts[0].lower() == "!reserve" and len(parts) >= 2:
             if reserve_client is None:
@@ -1030,70 +1031,12 @@ def _make_on_message(bound_client):
                 await message.channel.send(f"⚠️ Неизвестный клиент: `{target}`"); return
             if parts[0].lower() == "!pause":
                 _paused[target] = True
-                await message.channel.send(f"⏸ {target} на паузе (watchdog игнорирует).")
+                await message.channel.send(f"⏸ {target} на паузе.")
             else:
                 _paused[target] = False
                 if target in _CLIENTS:
                     await _ensure_connected(target)
                 await message.channel.send(f"▶️ {target} возобновлён.")
-            return
-
-        if parts[0].lower() == "!move" and len(parts) >= 3:
-            target, ch_id_s = parts[1].lower(), parts[2]
-            try: ch_id = int(ch_id_s)
-            except ValueError:
-                await message.channel.send("⚠️ channel_id должен быть числом."); return
-            client = _get_client(target)
-            if client is None:
-                await message.channel.send(f"⚠️ Нет клиента `{target}`."); return
-            ch = await _safe_get_channel(client, ch_id)
-            if not ch:
-                await message.channel.send(f"⚠️ Канал `{ch_id}` не найден."); return
-            try:
-                if client.voice_clients: await client.voice_clients[0].move_to(ch)
-                else: await ch.connect(timeout=CONNECT_TIMEOUT, self_deaf=True, self_mute=True)
-                await message.channel.send(f"✅ {target} → `{ch_id}`")
-            except Exception as e:
-                await message.channel.send(f"❌ {e}")
-            return
-
-        if parts[0].lower() == "!massmove" and len(parts) >= 2:
-            try: ch_id = int(parts[1])
-            except ValueError:
-                await message.channel.send("⚠️ channel_id должен быть числом."); return
-            moved, errors = 0, []
-            for name in _CLIENTS:
-                client = _CLIENTS[name]
-                try:
-                    ch = await _safe_get_channel(client, ch_id)
-                    if not ch:
-                        errors.append(name); continue
-                    if client.voice_clients: await client.voice_clients[0].move_to(ch)
-                    else: await ch.connect(timeout=CONNECT_TIMEOUT, self_deaf=True, self_mute=True)
-                    moved += 1
-                except Exception as e:
-                    errors.append(f"{name}: {e}")
-            await message.channel.send(f"✅ Перемещено: {moved}" + (f"\n⚠️ Ошибки: {len(errors)}" if errors else "")); return
-
-        if parts[0].lower() == "!blacklist" and len(parts) >= 2:
-            if parts[1].lower() == "list":
-                if _blacklist:
-                    await message.channel.send("🚫 Blacklist: " + ", ".join(f"`{u}`" for u in _blacklist))
-                else:
-                    await message.channel.send("Blacklist пуст.")
-                return
-            if parts[1].lower() == "remove" and len(parts) >= 3:
-                try:
-                    uid = int(parts[2]); _blacklist.discard(uid)
-                    await message.channel.send(f"✅ Убран из blacklist: `{uid}`")
-                except ValueError:
-                    await message.channel.send("⚠️ user_id должен быть числом.")
-                return
-            try:
-                uid = int(parts[1]); _blacklist.add(uid)
-                await message.channel.send(f"🚫 Добавлен в blacklist: `{uid}`")
-            except ValueError:
-                await message.channel.send("⚠️ Использование: `!blacklist <user_id>` / `list` / `remove <id>`")
             return
 
         if low == "!all on":
@@ -1109,18 +1052,6 @@ def _make_on_message(bound_client):
                     await w.disconnect()
             await message.channel.send("⛔ Все выключены."); return
             
-        if len(parts) >= 2:
-            cmd, t = parts[0].lower(), parts[1].lower()
-            w = watcher_egoist if t == "egoist" else (watcher_egorik if t == "egorik" else None)
-            if w:
-                if cmd == "!on":
-                    w.disabled, w.manual_mode = False, True
-                    ok, msg = await w.connect(MAIN_CHANNEL_ID)
-                    await message.channel.send(f"✅ {t} вкл ({msg})." if ok else f"⚠️ {t}: {msg}")
-                elif cmd == "!off":
-                    w.manual_mode, w.disabled = False, True
-                    await w.disconnect()
-                    await message.channel.send(f"⚙️ {t} выключен.")
     return handler
 
 for _name, _client in _CLIENTS.items():
@@ -1174,8 +1105,6 @@ def _install_signal_handlers(loop):
         except NotImplementedError: pass
 
 if __name__ == "__main__":
-    threading.Thread(target=run_web_server, daemon=True).start()
-    time.sleep(1.5)
     try:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
