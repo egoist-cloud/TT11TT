@@ -1,5 +1,5 @@
 # ====================================================
-# TT11TT — Discord боты (v40 - Soft Mute Fix)
+# TT11TT — Discord боты (v41 - Anti-Kick & Safe Mode)
 # ====================================================
 import os
 import sys
@@ -82,24 +82,24 @@ SPAM_CHANNEL_ID = 1270672504582832150
 REPORT_CHANNEL_ID = 1241013075151425650
 
 # ====================================================
-# КОНСТАНТЫ
+# КОНСТАНТЫ (С ЗАЩИТОЙ ОТ RATE-LIMIT)
 # ====================================================
 STATUS_INTERVAL = 3600
 CONNECT_TIMEOUT = 60.0
-WATCHDOG_MIN_INTERVAL = 5.0
-WATCHDOG_BASE_INTERVAL = 10.0
-WATCHDOG_MAX_INTERVAL = 30.0
-RECONNECT_MIN_DELAY = 4.0
+WATCHDOG_MIN_INTERVAL = 15.0
+WATCHDOG_BASE_INTERVAL = 30.0
+WATCHDOG_MAX_INTERVAL = 60.0
+RECONNECT_MIN_DELAY = 10.0
 DEAD_SOCKET_LATENCY_MS = 30_000
 FULL_RESTART_THRESHOLD = 3
 ALL_OFFLINE_RESTART_SEC = 120
-RECONNECT_GUARD_SEC = 15.0
+RECONNECT_GUARD_SEC = 20.0
 VOICE_UPTIME_LOG_INTERVAL = 1800
-CHANNEL_NOT_FOUND_BACKOFF_MIN = 5.0
-CHANNEL_NOT_FOUND_BACKOFF_MAX = 30.0
+CHANNEL_NOT_FOUND_BACKOFF_MIN = 10.0
+CHANNEL_NOT_FOUND_BACKOFF_MAX = 60.0
 GUILD_READY_TIMEOUT = 60.0
 LATENCY_HISTORY_SIZE = 60
-WARMUP_RETRY_INTERVAL = 10.0
+WARMUP_RETRY_INTERVAL = 15.0
 
 TEXT_STATUSES = ["Commback", "TALENT 24/7", "На страже", "Сижу в войсе"]
 WATCHING_STATUSES = ["как вы играете", "на ваши сообщения", "за порядком"]
@@ -164,7 +164,7 @@ _paused = {k: False for k in ALL_KEYS}
 _consecutive_failures = {k: 0 for k in ALL_KEYS}
 _latency_history = {k: deque(maxlen=LATENCY_HISTORY_SIZE) for k in ALL_KEYS}
 _drops_by_hour = {h: 0 for h in range(24)}
-_drops_day = datetime.utcnow().date()
+_drops_day = datetime.now(timezone.utc).date()
 _blacklist = set()
 
 reserve_manual_enabled = True
@@ -397,7 +397,7 @@ def _register_voice_ok(name: str):
     last = _voice_last_ok.get(name, now)
     _voice_uptime[name] = _voice_uptime.get(name, 0.0) + max(0.0, now - last)
     _voice_last_ok[name] = now
-    _watchdog_intervals[name] = max(WATCHDOG_MIN_INTERVAL, _watchdog_intervals.get(name, WATCHDOG_BASE_INTERVAL) * 0.9)
+    _watchdog_intervals[name] = max(WATCHDOG_MIN_INTERVAL, _watchdog_intervals.get(name, WATCHDOG_BASE_INTERVAL) * 0.95)
     _consecutive_failures[name] = 0
     client = _get_client(name)
     if client and client.is_ready():
@@ -408,13 +408,13 @@ def _register_voice_ok(name: str):
 
 def _register_voice_drop(name: str, reason: str = ""):
     global total_voice_drops, _drops_day
-    today = datetime.utcnow().date()
+    today = datetime.now(timezone.utc).date()
     if today != _drops_day:
         for h in _drops_by_hour: _drops_by_hour[h] = 0
         _drops_day = today
     total_voice_drops += 1
     _voice_last_ok[name] = time.time()
-    _watchdog_intervals[name] = min(WATCHDOG_MAX_INTERVAL, _watchdog_intervals.get(name, WATCHDOG_BASE_INTERVAL) * 1.5 + 0.5)
+    _watchdog_intervals[name] = min(WATCHDOG_MAX_INTERVAL, _watchdog_intervals.get(name, WATCHDOG_BASE_INTERVAL) * 2.0)
     _consecutive_failures[name] = _consecutive_failures.get(name, 0) + 1
     _drops_by_hour[datetime.now().hour] += 1
     log_event(f"⚠️ {name} вылетел из войса ({reason or 'watchdog'})")
@@ -454,6 +454,9 @@ async def status_changer(client, name):
     while not _shutdown_event.is_set():
         try:
             if client.is_ready():
+                # Очищаем состояние стрима (Go Live), чтобы Discord не кикал
+                await client.change_presence(activity=None)
+                await asyncio.sleep(2)
                 if random.random() < 0.5:
                     activity = discord.Activity(type=discord.ActivityType.playing, name=random.choice(TEXT_STATUSES))
                 else:
@@ -536,7 +539,7 @@ async def _full_client_restart(client_name: str):
     except Exception: pass
     try: await client.close()
     except Exception: pass
-    await asyncio.sleep(5)
+    await asyncio.sleep(15) # Увеличенная пауза для защиты от Rate Limit
     try:
         if client_name in _CLIENTS: asyncio.ensure_future(safe_start(client, token, client_name.upper()))
         elif client_name == "egoist" and watcher_egoist: asyncio.ensure_future(watcher_egoist.start())
@@ -587,12 +590,12 @@ class Watcher:
             if not self.manual_mode or self.disabled: return
 
             if after.self_mute or after.self_deaf:
-                await asyncio.sleep(1)
+                await asyncio.sleep(2)
                 await self._enforce_unmute()
 
             if not after.channel or after.channel.id != MAIN_CHANNEL_ID:
                 log_reconnect(self.key)
-                await asyncio.sleep(2)
+                await asyncio.sleep(5)
                 if self.manual_mode and not self.disabled:
                     await self.connect(MAIN_CHANNEL_ID)
 
@@ -604,13 +607,17 @@ class Watcher:
             if not guild: return
             me = guild.get_member(self.client.user.id)
             if me and me.voice and (me.voice.self_mute or me.voice.self_deaf):
-                # Переподключаемся без мута для дежурных
-                await vc.disconnect(force=True)
-                await asyncio.sleep(1)
-                channel = await _safe_get_channel(self.client, MAIN_CHANNEL_ID)
-                if channel:
-                    await channel.connect(timeout=CONNECT_TIMEOUT, self_deaf=False, self_mute=False)
-                    log.info("[%s] переподключен без мута", self.name)
+                # Мягкое снятие мута без переподключения
+                try:
+                    await me.edit(mute=False, deafen=False)
+                    log.info("[%s] мягко снят мут через edit", self.name)
+                except Exception:
+                    await vc.disconnect(force=True)
+                    await asyncio.sleep(2)
+                    channel = await _safe_get_channel(self.client, MAIN_CHANNEL_ID)
+                    if channel:
+                        await channel.connect(timeout=CONNECT_TIMEOUT, self_deaf=False, self_mute=False)
+                        log.info("[%s] переподключен без мута (fallback)", self.name)
         except Exception as e:
             log.debug("[%s] enforce_unmute: %s", self.name, e)
 
@@ -678,7 +685,7 @@ class Watcher:
                 if self.client.voice_clients:
                     try: await self.client.voice_clients[0].disconnect(force=True)
                     except Exception: pass
-                    await asyncio.sleep(1)
+                    await asyncio.sleep(2)
 
                 await channel.connect(timeout=CONNECT_TIMEOUT, self_deaf=False, self_mute=False)
                 log.info("[%s] подключен к %s (БЕЗ МУТА)", self.name, channel.name)
@@ -727,7 +734,7 @@ class Watcher:
             return False
 
 # ====================================================
-# 24/7 + RESERVE (МЯГКИЙ МУТ)
+# 24/7 + RESERVE (ЗАЩИТА ОТ КИКА)
 # ====================================================
 async def _enforce_mute(client_name: str):
     """Мягкая проверка мута. НЕ отключает бота от канала."""
@@ -739,14 +746,18 @@ async def _enforce_mute(client_name: str):
         me = vc.guild.get_member(client.user.id) if vc.guild else None
         if me and me.voice:
             if not me.voice.self_mute or not me.voice.self_deaf:
-                # Пытаемся применить мут через API
+                # Приоритет: мягкий edit (безопасно для self-bot)
                 try:
                     await me.edit(mute=True, deafen=True)
                     log.info("[%s] применен мягкий мут через edit", client_name.upper())
-                except Exception:
-                    # Если API не даёт, используем встроенный voice_state
-                    await vc.guild.change_voice_state(channel=vc.channel, self_mute=True, self_deaf=True)
-                    log.info("[%s] применен мут через change_voice_state", client_name.upper())
+                except Exception as e:
+                    log.debug("[%s] edit failed: %s", client_name, e)
+                    # Fallback (если API не даёт)
+                    try:
+                        await vc.guild.change_voice_state(channel=vc.channel, self_mute=True, self_deaf=True)
+                        log.info("[%s] применен мут через change_voice_state", client_name.upper())
+                    except Exception as e2:
+                        log.debug("[%s] change_voice_state failed: %s", client_name, e2)
     except Exception as e:
         log.debug("[%s] enforce_mute error: %s", client_name, e)
 
@@ -788,15 +799,15 @@ async def _ensure_connected(client_name: str):
         if client.voice_clients:
             try: await client.voice_clients[0].disconnect(force=True)
             except Exception: pass
-            await asyncio.sleep(2)
+            await asyncio.sleep(3)
             
         try:
             # 1. Подключаемся БЕЗ мута (чтобы Discord не разорвал сессию)
             vc = await channel.connect(timeout=CONNECT_TIMEOUT, self_deaf=False, self_mute=False)
             log.info("[%s] подключен к %s (заход без мута)", client_name.upper(), channel.name)
             
-            # 2. Ждем 1.5 сек и применяем мут
-            await asyncio.sleep(1.5)
+            # 2. Ждем 2 сек и применяем мут
+            await asyncio.sleep(2)
             await _enforce_mute(client_name)
                 
             _register_voice_ok(client_name)
@@ -875,7 +886,7 @@ def _bind_client_events(name, client):
             await _ensure_connected(name)
             return
         if not after.self_mute or not after.self_deaf:
-            await asyncio.sleep(1.5)
+            await asyncio.sleep(2)
             await _enforce_mute(name)
 
 if TOKEN_MAIN: _bind_client_events("main", main_client)
@@ -1005,7 +1016,7 @@ def _build_help() -> str:
 
 async def _build_screenshot_file() -> discord.File:
     payload = {
-        "generated_at": datetime.utcnow().isoformat(), "uptime": fmt_uptime(), "uptime_sec": int(time.time() - start_time),
+        "generated_at": datetime.now(timezone.utc).isoformat(), "uptime": fmt_uptime(), "uptime_sec": int(time.time() - start_time),
         "reconnects": reconnect_stats, "voice_uptime": {k: int(v) for k, v in _voice_uptime.items()},
         "voice_drops": total_voice_drops, "drops_by_hour": _drops_by_hour, "channel_not_found": _channel_not_found,
         "paused": _paused, "reserve_enabled": reserve_manual_enabled,
