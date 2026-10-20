@@ -1,5 +1,5 @@
 # ====================================================
-# TT11TT — Discord боты (v48 - Дежурные БЕЗ МУТА)
+# TT11TT — Discord боты (v49 - Без проверки ID в ЛС)
 # ====================================================
 import os
 import sys
@@ -61,7 +61,7 @@ def get_env_bool(name, default=False):
     if val is None: return default
     return val.lower() in ("1", "true", "yes", "on")
 
-# РАСПРЕДЕЛЕНИЕ ТОКЕНОВ (1=Egoist, 2=Egorik, 3=Main, 4=Second)
+# РАСПРЕДЕЛЕНИЕ ТОКЕНОВ
 TOKEN_EGOIST = get_env_str("DISCORD_TOKEN_1") 
 TOKEN_EGORIK = get_env_str("DISCORD_TOKEN_2") 
 TOKEN_MAIN = get_env_str("DISCORD_TOKEN_3")   
@@ -542,7 +542,6 @@ class Watcher:
                     except Exception: pass
                     await asyncio.sleep(2)
 
-                # ДЕЖУРНЫЕ ЗАХОДЯТ БЕЗ МУТА (self_deaf=False, self_mute=False)
                 await channel.connect(timeout=CONNECT_TIMEOUT, self_deaf=False, self_mute=False)
                 log.info("[%s] подключен к %s (БЕЗ МУТА)", self.name, channel.name)
                 _register_voice_ok(self.key)
@@ -620,7 +619,6 @@ async def _ensure_connected(client_name: str):
             await asyncio.sleep(3)
             
         try:
-            # 24/7 БОТЫ СИДЯТ В МУТЕ (self_deaf=True, self_mute=True)
             await channel.connect(timeout=CONNECT_TIMEOUT, self_deaf=True, self_mute=True)
             log.info("[%s] подключен к %s (В МУТЕ)", client_name.upper(), channel.name)
             _register_voice_ok(client_name)
@@ -833,15 +831,20 @@ def _make_on_message(bound_client):
         if bound_client.user is None or message.author.id == bound_client.user.id: 
             return
             
-        allowed = {USER_ID_EGOIST, USER_ID_EGORIK, MAIN_BOT_USER_ID, bound_client.user.id}
-        if message.author.id not in allowed or message.author.id in _blacklist: 
+        # ВРЕМЕННО РАЗРЕШАЕМ ВСЕМ (чтобы вы могли управлять с любого аккаунта)
+        # Если нужно ограничить, раскомментируйте строки ниже и впишите ID.
+        # allowed = {USER_ID_EGOIST, USER_ID_EGORIK, MAIN_BOT_USER_ID, bound_client.user.id}
+        # if message.author.id not in allowed or message.author.id in _blacklist: 
+        #     return
+            
+        if message.author.id in _blacklist:
             return
             
         content = message.content.strip()
         parts = content.split()
         if not parts: return
         
-        # РАЗРЕШАЕМ КОМАНДЫ ТОЛЬКО В КАНАЛЕ #РЕПОРТЫ И В ЛС
+        # РАЗРЕШАЕМ КОМАНДЫ В КАНАЛЕ #РЕПОРТЫ И В ЛС
         is_dm = isinstance(message.channel, discord.DMChannel)
         is_report_channel = (message.channel.id == 1241013075151425650)
         
