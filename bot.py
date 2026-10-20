@@ -1,5 +1,5 @@
 # ====================================================
-# TT11TT — Discord боты (v41 - Anti-Kick & Safe Mode)
+# TT11TT — Discord боты (v42 - Stable Voice)
 # ====================================================
 import os
 import sys
@@ -82,7 +82,7 @@ SPAM_CHANNEL_ID = 1270672504582832150
 REPORT_CHANNEL_ID = 1241013075151425650
 
 # ====================================================
-# КОНСТАНТЫ (С ЗАЩИТОЙ ОТ RATE-LIMIT)
+# КОНСТАНТЫ
 # ====================================================
 STATUS_INTERVAL = 3600
 CONNECT_TIMEOUT = 60.0
@@ -91,7 +91,6 @@ WATCHDOG_BASE_INTERVAL = 30.0
 WATCHDOG_MAX_INTERVAL = 60.0
 RECONNECT_MIN_DELAY = 10.0
 DEAD_SOCKET_LATENCY_MS = 30_000
-FULL_RESTART_THRESHOLD = 3
 ALL_OFFLINE_RESTART_SEC = 120
 RECONNECT_GUARD_SEC = 20.0
 VOICE_UPTIME_LOG_INTERVAL = 1800
@@ -454,7 +453,6 @@ async def status_changer(client, name):
     while not _shutdown_event.is_set():
         try:
             if client.is_ready():
-                # Очищаем состояние стрима (Go Live), чтобы Discord не кикал
                 await client.change_presence(activity=None)
                 await asyncio.sleep(2)
                 if random.random() < 0.5:
@@ -527,27 +525,6 @@ def _start_warmup_retry(client_name: str):
     _warmup_task[client_name] = asyncio.ensure_future(_retry())
 
 # ====================================================
-# FULL CLIENT RESTART
-# ====================================================
-async def _full_client_restart(client_name: str):
-    client = _get_client(client_name)
-    token = _get_token(client_name)
-    if client is None or not token: return
-    log_event(f"🔁 {client_name}: ПОЛНЫЙ перезапуск клиента")
-    try:
-        if client.voice_clients: await client.voice_clients[0].disconnect(force=True)
-    except Exception: pass
-    try: await client.close()
-    except Exception: pass
-    await asyncio.sleep(15) # Увеличенная пауза для защиты от Rate Limit
-    try:
-        if client_name in _CLIENTS: asyncio.ensure_future(safe_start(client, token, client_name.upper()))
-        elif client_name == "egoist" and watcher_egoist: asyncio.ensure_future(watcher_egoist.start())
-        elif client_name == "egorik" and watcher_egorik: asyncio.ensure_future(watcher_egorik.start())
-        _consecutive_failures[client_name] = 0
-    except Exception as e: log.error("[%s] full restart failed: %s", client_name, e)
-
-# ====================================================
 # WATCHER (ДЕЖУРНЫЕ)
 # ====================================================
 class Watcher:
@@ -588,38 +565,14 @@ class Watcher:
             me = self.client.user
             if me is None or member.id != me.id: return
             if not self.manual_mode or self.disabled: return
-
-            if after.self_mute or after.self_deaf:
-                await asyncio.sleep(2)
-                await self._enforce_unmute()
-
+            # Игнорируем обновления в том же канале (например, смена mute)
+            if before.channel and after.channel and before.channel.id == after.channel.id:
+                return
             if not after.channel or after.channel.id != MAIN_CHANNEL_ID:
                 log_reconnect(self.key)
                 await asyncio.sleep(5)
                 if self.manual_mode and not self.disabled:
                     await self.connect(MAIN_CHANNEL_ID)
-
-    async def _enforce_unmute(self):
-        try:
-            vc = self.client.voice_clients[0] if self.client.voice_clients else None
-            if not vc or not vc.is_connected() or not vc.channel: return
-            guild = vc.guild
-            if not guild: return
-            me = guild.get_member(self.client.user.id)
-            if me and me.voice and (me.voice.self_mute or me.voice.self_deaf):
-                # Мягкое снятие мута без переподключения
-                try:
-                    await me.edit(mute=False, deafen=False)
-                    log.info("[%s] мягко снят мут через edit", self.name)
-                except Exception:
-                    await vc.disconnect(force=True)
-                    await asyncio.sleep(2)
-                    channel = await _safe_get_channel(self.client, MAIN_CHANNEL_ID)
-                    if channel:
-                        await channel.connect(timeout=CONNECT_TIMEOUT, self_deaf=False, self_mute=False)
-                        log.info("[%s] переподключен без мута (fallback)", self.name)
-        except Exception as e:
-            log.debug("[%s] enforce_unmute: %s", self.name, e)
 
     def _start_watchdog(self):
         if self._watchdog_task is None or self._watchdog_task.done():
@@ -637,8 +590,6 @@ class Watcher:
             if self.disabled or not self.manual_mode: continue
             if not self.client.is_ready(): continue
 
-            await self._enforce_unmute()
-
             if _is_dead_socket(self.client):
                 log_event(f"[{self.name}] dead socket")
                 _register_voice_drop(self.key, "dead-socket")
@@ -654,10 +605,7 @@ class Watcher:
                     continue
                 _register_voice_drop(self.key, "not-in-voice")
                 log_reconnect(self.key)
-                if _consecutive_failures.get(self.key, 0) >= FULL_RESTART_THRESHOLD:
-                    await _full_client_restart(self.key)
-                else:
-                    await self._force_reconnect()
+                await self._force_reconnect()
                 continue
             _register_voice_ok(self.key)
 
@@ -687,8 +635,9 @@ class Watcher:
                     except Exception: pass
                     await asyncio.sleep(2)
 
-                await channel.connect(timeout=CONNECT_TIMEOUT, self_deaf=False, self_mute=False)
-                log.info("[%s] подключен к %s (БЕЗ МУТА)", self.name, channel.name)
+                # Подключаемся сразу в муте, без последующего изменения состояния
+                await channel.connect(timeout=CONNECT_TIMEOUT, self_deaf=True, self_mute=True)
+                log.info("[%s] подключен к %s", self.name, channel.name)
                 _register_voice_ok(self.key)
                 return True, "Успешно"
             except Exception as e:
@@ -734,56 +683,18 @@ class Watcher:
             return False
 
 # ====================================================
-# 24/7 + RESERVE (ЗАЩИТА ОТ КИКА)
+# 24/7 + RESERVE (БЕЗ ПРИНУДИТЕЛЬНОГО МУТА)
 # ====================================================
-async def _enforce_mute(client_name: str):
-    """Мягкая проверка мута. НЕ отключает бота от канала."""
-    client = _get_client(client_name)
-    if client is None or not client.voice_clients: return
-    try:
-        vc = client.voice_clients[0]
-        if not vc.is_connected() or not vc.channel: return
-        me = vc.guild.get_member(client.user.id) if vc.guild else None
-        if me and me.voice:
-            if not me.voice.self_mute or not me.voice.self_deaf:
-                # Приоритет: мягкий edit (безопасно для self-bot)
-                try:
-                    await me.edit(mute=True, deafen=True)
-                    log.info("[%s] применен мягкий мут через edit", client_name.upper())
-                except Exception as e:
-                    log.debug("[%s] edit failed: %s", client_name, e)
-                    # Fallback (если API не даёт)
-                    try:
-                        await vc.guild.change_voice_state(channel=vc.channel, self_mute=True, self_deaf=True)
-                        log.info("[%s] применен мут через change_voice_state", client_name.upper())
-                    except Exception as e2:
-                        log.debug("[%s] change_voice_state failed: %s", client_name, e2)
-    except Exception as e:
-        log.debug("[%s] enforce_mute error: %s", client_name, e)
-
-async def _force_reconnect(client_name: str):
-    client = _get_client(client_name)
-    if client is None: return
-    lock = _reconnect_locks.get(client_name)
-    if lock:
-        async with lock:
-            try:
-                if client.voice_clients: await client.voice_clients[0].disconnect(force=True)
-            except Exception: pass
-            await asyncio.sleep(RECONNECT_MIN_DELAY)
-    await _ensure_connected(client_name)
-
 async def _ensure_connected(client_name: str):
     client = _get_client(client_name)
     if client is None or MAIN_CHANNEL_ID == 0: return
     if not _client_ready.get(client_name, False): return
-    
+
     if _is_in_voice(client, MAIN_CHANNEL_ID):
         _channel_not_found[client_name] = 0
         _channel_backoff[client_name] = CHANNEL_NOT_FOUND_BACKOFF_MIN
-        await _enforce_mute(client_name)
         return
-        
+
     lock = _LOCKS.get(client_name)
     if lock is None: return
     async with lock:
@@ -795,21 +706,15 @@ async def _ensure_connected(client_name: str):
             return
         _channel_not_found[client_name] = 0
         _channel_backoff[client_name] = CHANNEL_NOT_FOUND_BACKOFF_MIN
-        
+
         if client.voice_clients:
             try: await client.voice_clients[0].disconnect(force=True)
             except Exception: pass
             await asyncio.sleep(3)
-            
+
         try:
-            # 1. Подключаемся БЕЗ мута (чтобы Discord не разорвал сессию)
-            vc = await channel.connect(timeout=CONNECT_TIMEOUT, self_deaf=False, self_mute=False)
-            log.info("[%s] подключен к %s (заход без мута)", client_name.upper(), channel.name)
-            
-            # 2. Ждем 2 сек и применяем мут
-            await asyncio.sleep(2)
-            await _enforce_mute(client_name)
-                
+            vc = await channel.connect(timeout=CONNECT_TIMEOUT, self_deaf=True, self_mute=True)
+            log.info("[%s] подключен к %s", client_name.upper(), channel.name)
             _register_voice_ok(client_name)
         except Exception as e:
             log.warning("[%s] ошибка подключения: %s", client_name.upper(), e)
@@ -832,10 +737,7 @@ async def _watchdog_loop(client_name: str):
             log_event(f"[{client_name}] dead socket")
             _register_voice_drop(client_name, "dead-socket")
             log_reconnect(client_name)
-            if _consecutive_failures.get(client_name, 0) >= FULL_RESTART_THRESHOLD:
-                await _full_client_restart(client_name)
-            else:
-                await _force_reconnect(client_name)
+            await _ensure_connected(client_name)
             continue
         if not _is_in_voice(client, MAIN_CHANNEL_ID):
             now = time.time()
@@ -846,13 +748,9 @@ async def _watchdog_loop(client_name: str):
                 continue
             _register_voice_drop(client_name, "not-in-voice")
             log_reconnect(client_name)
-            if _consecutive_failures.get(client_name, 0) >= FULL_RESTART_THRESHOLD:
-                await _full_client_restart(client_name)
-            else:
-                await _ensure_connected(client_name)
+            await _ensure_connected(client_name)
             continue
         _register_voice_ok(client_name)
-        await _enforce_mute(client_name)
 
 def _bind_client_events(name, client):
     @client.event
@@ -880,14 +778,12 @@ def _bind_client_events(name, client):
         if GUILD_ID and member.guild.id != GUILD_ID: return
         me = client.user
         if me is None or member.id != me.id: return
+        # Игнорируем обновления в том же канале
+        if before.channel and after.channel and before.channel.id == after.channel.id:
+            return
         if not after.channel or after.channel.id != MAIN_CHANNEL_ID:
-            asyncio.ensure_future(_send_report(client, "Принудительный выход из канала (Voice State Update)", name))
             await asyncio.sleep(5)
             await _ensure_connected(name)
-            return
-        if not after.self_mute or not after.self_deaf:
-            await asyncio.sleep(2)
-            await _enforce_mute(name)
 
 if TOKEN_MAIN: _bind_client_events("main", main_client)
 if TOKEN_SECOND: _bind_client_events("second", second_client)
