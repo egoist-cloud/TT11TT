@@ -1,5 +1,5 @@
 # ====================================================
-# TT11TT — Discord боты (v47 - Stable Voice & Commands)
+# TT11TT — Discord боты (v48 - Дежурные БЕЗ МУТА)
 # ====================================================
 import os
 import sys
@@ -14,7 +14,6 @@ import json
 import io
 import traceback
 from collections import deque
-from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime, timezone, timedelta
 
 import aiohttp
@@ -62,11 +61,11 @@ def get_env_bool(name, default=False):
     if val is None: return default
     return val.lower() in ("1", "true", "yes", "on")
 
-# РАСПРЕДЕЛЕНИЕ ПО ВАШЕМУ ЗАПРОСУ:
-TOKEN_EGOIST = get_env_str("DISCORD_TOKEN_1") # 1 - Egoist
-TOKEN_EGORIK = get_env_str("DISCORD_TOKEN_2") # 2 - Egorik
-TOKEN_MAIN = get_env_str("DISCORD_TOKEN_3")   # 3 - commback
-TOKEN_SECOND = get_env_str("DISCORD_TOKEN_4") # 4 - asiris
+# РАСПРЕДЕЛЕНИЕ ТОКЕНОВ (1=Egoist, 2=Egorik, 3=Main, 4=Second)
+TOKEN_EGOIST = get_env_str("DISCORD_TOKEN_1") 
+TOKEN_EGORIK = get_env_str("DISCORD_TOKEN_2") 
+TOKEN_MAIN = get_env_str("DISCORD_TOKEN_3")   
+TOKEN_SECOND = get_env_str("DISCORD_TOKEN_4") 
 TOKEN_THIRD = get_env_str("DISCORD_TOKEN_5")
 TOKEN_RESERVE = get_env_str("DISCORD_TOKEN_6")
 
@@ -429,7 +428,7 @@ def _start_warmup_retry(client_name: str):
     _warmup_task[client_name] = asyncio.ensure_future(_retry())
 
 # ====================================================
-# WATCHER (ДЕЖУРНЫЕ)
+# WATCHER (ДЕЖУРНЫЕ - БЕЗ МУТА)
 # ====================================================
 class Watcher:
     def __init__(self, token, user_id, name):
@@ -543,8 +542,9 @@ class Watcher:
                     except Exception: pass
                     await asyncio.sleep(2)
 
-                await channel.connect(timeout=CONNECT_TIMEOUT, self_deaf=True, self_mute=True)
-                log.info("[%s] подключен к %s", self.name, channel.name)
+                # ДЕЖУРНЫЕ ЗАХОДЯТ БЕЗ МУТА (self_deaf=False, self_mute=False)
+                await channel.connect(timeout=CONNECT_TIMEOUT, self_deaf=False, self_mute=False)
+                log.info("[%s] подключен к %s (БЕЗ МУТА)", self.name, channel.name)
                 _register_voice_ok(self.key)
                 return True, "Успешно"
             except Exception as e:
@@ -590,7 +590,7 @@ class Watcher:
             return False
 
 # ====================================================
-# 24/7 + RESERVE
+# 24/7 + RESERVE (ЭТИ БОТЫ ОСТАЮТСЯ В МУТЕ)
 # ====================================================
 async def _ensure_connected(client_name: str):
     client = _get_client(client_name)
@@ -620,8 +620,9 @@ async def _ensure_connected(client_name: str):
             await asyncio.sleep(3)
             
         try:
+            # 24/7 БОТЫ СИДЯТ В МУТЕ (self_deaf=True, self_mute=True)
             await channel.connect(timeout=CONNECT_TIMEOUT, self_deaf=True, self_mute=True)
-            log.info("[%s] подключен к %s", client_name.upper(), channel.name)
+            log.info("[%s] подключен к %s (В МУТЕ)", client_name.upper(), channel.name)
             _register_voice_ok(client_name)
         except Exception as e:
             log.warning("[%s] ошибка подключения: %s", client_name.upper(), e)
@@ -738,7 +739,7 @@ def _build_panel() -> str:
     lines = ["🎛 **ПАНЕЛЬ TT11TT**", f"⏱ Uptime: **{fmt_uptime()}**", f"🔻 Всего вылетов: **{total_voice_drops}**"]
     nf = sum(_channel_not_found.values())
     if nf: lines.append(f"⚠️ Канал не найден: **{nf}**")
-    lines += ["", "**Дежурные:**", f"  • Egoist: {_w_state(watcher_egoist)}", f"  • Egorik: {_w_state(watcher_egorik)}", "", "**24/7 боты (мут):**"]
+    lines += ["", "**Дежурные (БЕЗ МУТА):**", f"  • Egoist: {_w_state(watcher_egoist)}", f"  • Egorik: {_w_state(watcher_egorik)}", "", "**24/7 боты (В МУТЕ):**"]
     for n in ("main", "second", "third"):
         c = _CLIENTS[n]
         ch = _voice_channel_id(c)
