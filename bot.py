@@ -1,5 +1,5 @@
 # ====================================================
-# TT11TT — Discord боты (v42 - Stable Voice)
+# TT11TT — Discord боты (v43 - Stable & Command Fix)
 # ====================================================
 import os
 import sys
@@ -198,7 +198,7 @@ if reserve_client is not None: _CLIENTS["reserve"] = reserve_client
 _LOCKS = {"main": _main_lock, "second": _second_lock, "third": _third_lock, "reserve": _reserve_lock}
 
 # ====================================================
-# ВЕБ-СЕРВЕР
+# ВЕБ-СЕРВЕР (Для работы на Render)
 # ====================================================
 def _prometheus_metrics() -> str:
     lines = ["# HELP tt11tt_reconnects_total Всего реконнектов", "# TYPE tt11tt_reconnects_total counter"]
@@ -297,12 +297,6 @@ def log_reconnect(name: str):
     reconnect_stats[name] = reconnect_stats.get(name, 0) + 1
     last_event_time[name] = time.time()
     log_event(f"реконнект {name} #{reconnect_stats[name]}")
-
-async def _send_report(client, text: str, client_name: str):
-    try:
-        channel = await _safe_get_channel(client, REPORT_CHANNEL_ID)
-        if channel: await channel.send(f"⚠️ **БОТ `{client_name.upper()}` ВЫЛЕТЕЛ**\n{text}")
-    except Exception as e: log.error("Не удалось отправить отчет: %s", e)
 
 async def uptime_pinger():
     await asyncio.sleep(60)
@@ -417,8 +411,6 @@ def _register_voice_drop(name: str, reason: str = ""):
     _consecutive_failures[name] = _consecutive_failures.get(name, 0) + 1
     _drops_by_hour[datetime.now().hour] += 1
     log_event(f"⚠️ {name} вылетел из войса ({reason or 'watchdog'})")
-    client = _get_client(name)
-    if client: asyncio.ensure_future(_send_report(client, f"Причина: {reason or 'watchdog'}", name))
 
 async def _log_voice_uptime_periodic():
     while not _shutdown_event.is_set():
@@ -549,9 +541,11 @@ class Watcher:
             if self._status_task is None or self._status_task.done():
                 self._status_task = self.client.loop.create_task(status_changer(self.client, self.name))
             self._start_watchdog()
+        
         @self.client.event
         async def on_disconnect():
             if self.manual_mode and not self.disabled: log_event(f"[{self.name}] on_disconnect")
+        
         @self.client.event
         async def on_resumed():
             log.info("[%s] resumed", self.name)
@@ -559,17 +553,20 @@ class Watcher:
                 await _warmup_guild(self.key)
             if self.manual_mode and not self.disabled:
                 await self.connect(MAIN_CHANNEL_ID)
+        
         @self.client.event
         async def on_voice_state_update(member, before, after):
             if GUILD_ID and member.guild.id != GUILD_ID: return
             me = self.client.user
             if me is None or member.id != me.id: return
             if not self.manual_mode or self.disabled: return
-            # Игнорируем обновления в том же канале (например, смена mute)
+            
+            # Игнорируем любые обновления в том же канале (например, смена mute)
             if before.channel and after.channel and before.channel.id == after.channel.id:
                 return
+                
             if not after.channel or after.channel.id != MAIN_CHANNEL_ID:
-                log_reconnect(self.key)
+                log_event(f"[{self.name}] Принудительный выход или кик, переподключение...")
                 await asyncio.sleep(5)
                 if self.manual_mode and not self.disabled:
                     await self.connect(MAIN_CHANNEL_ID)
@@ -635,7 +632,7 @@ class Watcher:
                     except Exception: pass
                     await asyncio.sleep(2)
 
-                # Подключаемся сразу в муте, без последующего изменения состояния
+                # Заходим сразу в муте, больше не трогаем состояние
                 await channel.connect(timeout=CONNECT_TIMEOUT, self_deaf=True, self_mute=True)
                 log.info("[%s] подключен к %s", self.name, channel.name)
                 _register_voice_ok(self.key)
@@ -683,18 +680,18 @@ class Watcher:
             return False
 
 # ====================================================
-# 24/7 + RESERVE (БЕЗ ПРИНУДИТЕЛЬНОГО МУТА)
+# 24/7 + RESERVE
 # ====================================================
 async def _ensure_connected(client_name: str):
     client = _get_client(client_name)
     if client is None or MAIN_CHANNEL_ID == 0: return
     if not _client_ready.get(client_name, False): return
-
+    
     if _is_in_voice(client, MAIN_CHANNEL_ID):
         _channel_not_found[client_name] = 0
         _channel_backoff[client_name] = CHANNEL_NOT_FOUND_BACKOFF_MIN
         return
-
+        
     lock = _LOCKS.get(client_name)
     if lock is None: return
     async with lock:
@@ -706,12 +703,12 @@ async def _ensure_connected(client_name: str):
             return
         _channel_not_found[client_name] = 0
         _channel_backoff[client_name] = CHANNEL_NOT_FOUND_BACKOFF_MIN
-
+        
         if client.voice_clients:
             try: await client.voice_clients[0].disconnect(force=True)
             except Exception: pass
             await asyncio.sleep(3)
-
+            
         try:
             vc = await channel.connect(timeout=CONNECT_TIMEOUT, self_deaf=True, self_mute=True)
             log.info("[%s] подключен к %s", client_name.upper(), channel.name)
@@ -764,24 +761,30 @@ def _bind_client_events(name, client):
         if name not in _status_started:
             _status_started.add(name)
             client.loop.create_task(status_changer(client, name.upper()))
+    
     @client.event
     async def on_disconnect():
         log.warning("[%s] on_disconnect", name.upper())
+    
     @client.event
     async def on_resumed():
         log.info("[%s] resumed", name.upper())
         if not _client_ready.get(name, False):
             await _warmup_guild(name)
         await _ensure_connected(name)
+    
     @client.event
     async def on_voice_state_update(member, before, after):
         if GUILD_ID and member.guild.id != GUILD_ID: return
         me = client.user
         if me is None or member.id != me.id: return
+        
         # Игнорируем обновления в том же канале
         if before.channel and after.channel and before.channel.id == after.channel.id:
             return
+            
         if not after.channel or after.channel.id != MAIN_CHANNEL_ID:
+            log_event(f"[{name.upper()}] Вылетел из канала, переподключение...")
             await asyncio.sleep(5)
             await _ensure_connected(name)
 
@@ -929,13 +932,26 @@ async def _build_screenshot_file() -> discord.File:
 def _make_on_message(bound_client):
     async def handler(message):
         global total_commands_handled, _last_write_at, reserve_manual_enabled
-        if bound_client.user is None or message.author.id == bound_client.user.id: return
-        if not isinstance(message.channel, discord.DMChannel): return
+        
+        # Игнорируем свои сообщения
+        if bound_client.user is None or message.author.id == bound_client.user.id: 
+            return
+            
+        # Проверка на белый список (кому разрешено управлять)
         allowed = {USER_ID_EGOIST, USER_ID_EGORIK, MAIN_BOT_USER_ID, bound_client.user.id}
-        if message.author.id not in allowed or message.author.id in _blacklist: return
+        if message.author.id not in allowed or message.author.id in _blacklist: 
+            return
+            
         content = message.content.strip()
         parts = content.split()
         if not parts: return
+        
+        # Разрешаем команды и в ЛС, и в канале #репорты
+        is_dm = isinstance(message.channel, discord.DMChannel)
+        is_report_channel = message.channel.id == REPORT_CHANNEL_ID
+        if not is_dm and not is_report_channel:
+            return
+
         total_commands_handled += 1
         low = content.lower()
 
@@ -1092,6 +1108,7 @@ def _make_on_message(bound_client):
                     w.manual_mode, w.disabled = False, True
                     await w.disconnect()
             await message.channel.send("⛔ Все выключены."); return
+            
         if len(parts) >= 2:
             cmd, t = parts[0].lower(), parts[1].lower()
             w = watcher_egoist if t == "egoist" else (watcher_egorik if t == "egorik" else None)
