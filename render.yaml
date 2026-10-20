@@ -3,8 +3,8 @@ services:
     name: TT11TT
     env: python
     plan: free
-    buildCommand: "apt-get update && apt-get install -y libffi-dev libsodium-dev && pip install -r requirements.txt"
-    startCommand: "python bot.py"
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python main.py"
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.7
@@ -17,6 +17,8 @@ services:
       - key: DISCORD_TOKEN_4
         sync: false
       - key: DISCORD_TOKEN_5
+        sync: false
+      - key: DISCORD_TOKEN_6
         sync: false
       - key: VOICE_CHANNEL_ID
         sync: false
@@ -33,10 +35,6 @@ services:
       - key: GUILD_ID
         sync: false
       - key: RENDER_URL
-        sync: false
-      - key: TELEGRAM_TOKEN
-        sync: false
-      - key: TELEGRAM_CHAT_ID
         sync: false
       - key: STATUS_ROTATION
         value: "false"
