@@ -1,0 +1,13 @@
+2026-10-22 14:55:03,275 | INFO     | staypresent.web.status(): no api_key given for the status page at '/status' - generated a random session key so its admin view still works: f63mXK0FebIcXAlb1IMDtHzHmQlO6psI5zEGshWbrXc (pass api_key="" to disable the admin view instead, or api_key=... for a fixed key that survives a restart).
+2026-10-22 14:55:03,323 | INFO     | Using waitress (production WSGI server) on 0.0.0.0:8099 with 4 thread(s)
+2026-10-22 14:55:04,780 | INFO     | Web server running on 0.0.0.0:8099
+[bot 'bot.py'] --- Logging error ---
+[bot 'bot.py'] Traceback (most recent call last):
+[bot 'bot.py']   File "C:\Users\kunde\AppData\Local\Python\pythoncore-3.14-64\Lib\logging\__init__.py", line 1155, in emit
+[bot 'bot.py']     self.flush()
+[bot 'bot.py']     ~~~~~~~~~~^^
+[bot 'bot.py']   File "C:\Users\kunde\AppData\Local\Python\pythoncore-3.14-64\Lib\logging\__init__.py", line 1137, in flush
+[bot 'bot.py']     self.stream.flush()
+[bot 'bot.py']     ~~~~~~~~~~~~~~~~~^^
+[bot 'bot.py'] OSError: [Errno 22] Invalid argument
+[bot 'bot.py'] Call stack:

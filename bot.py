@@ -67,6 +67,19 @@ def get_env_bool(name, default=False):
     if val is None: return default
     return val.lower() in ("1", "true", "yes", "on")
 
+def get_env_id_list(name):
+    """Список ID из переменной вида '123,456' (запятая/точка с запятой)."""
+    raw = get_env_str(name)
+    if not raw: return []
+    out = []
+    for part in raw.replace(";", ",").split(","):
+        part = part.strip()
+        if not part: continue
+        try: out.append(int(part))
+        except ValueError:
+            log.error("ОШИБКА: переменная %s содержит не-число '%s'!", name, part)
+    return out
+
 # РАСПРЕДЕЛЕНИЕ ТОКЕНОВ
 TOKEN_EGOIST = get_env_str("DISCORD_TOKEN_1")
 TOKEN_EGORIK = get_env_str("DISCORD_TOKEN_2")
@@ -97,8 +110,24 @@ HTTP_HOST = "0.0.0.0"
 HTTP_PORT = get_env_int("PORT", 10000)
 
 # ДОСТУП К КОМАНДАМ
-ALLOWED_COMMAND_USERS = {1113899288192356402, 1416125087324831815}
-COMMAND_ALLOWED_CHANNEL_IDS = {1241013075151425650}
+# Кто может управлять аккаунтами: дефолтные владельцы + ID из env
+# (ALLOWED_USER_IDS / OWNER_ID / OWNER_IDS через запятую).
+_DEFAULT_ALLOWED_USERS = {1113899288192356402, 1416125087324831815}
+ALLOWED_COMMAND_USERS = _DEFAULT_ALLOWED_USERS | set(
+    get_env_id_list("ALLOWED_USER_IDS")
+    + get_env_id_list("ALLOWED_USER_ID")
+    + get_env_id_list("OWNER_IDS")
+    + get_env_id_list("OWNER_ID")
+)
+
+# Где принимать команды:
+#   ЛС - всегда;
+#   каналы сервера - если ALLOW_COMMANDS_IN_GUILD=true (по умолчанию),
+#   плюс каналы из COMMAND_CHANNEL_IDS и канал репортов.
+ALLOW_COMMANDS_IN_GUILD = get_env_bool("ALLOW_COMMANDS_IN_GUILD", True)
+COMMAND_CHANNEL_IDS = set(get_env_id_list("COMMAND_CHANNEL_IDS"))
+REPORT_CHANNEL_ID = get_env_int("REPORT_CHANNEL_ID", 1241013075151425650)
+COMMAND_ALLOWED_CHANNEL_IDS = COMMAND_CHANNEL_IDS | {REPORT_CHANNEL_ID}
 
 # КОНСТАНТЫ
 STATUS_INTERVAL = 3600
@@ -468,6 +497,126 @@ async def status_changer(client, name):
             pass
 
 # ====================================================
+# 24/7 + RESERVE (ЭТИ БОТЫ ОСТАЮТСЯ В МУТЕ)
+# ====================================================
+async def _ensure_connected(name: str):
+    """Заводит 24/7-бота в голосовой канал (в муте) и держит его там."""
+    client = _get_client(name)
+    if client is None or MAIN_CHANNEL_ID == 0:
+        return
+    if not _client_ready.get(name, False):
+        return
+    if not _voice_supported():
+        _warn_once(("nacl", name),
+                   "PyNaCl не установлен - 24/7-боты не смогут зайти в голос "
+                   "(проверьте requirements.txt)")
+        return
+    if _is_in_voice(client, MAIN_CHANNEL_ID):
+        _channel_not_found[name] = 0
+        _channel_backoff[name] = CHANNEL_NOT_FOUND_BACKOFF_MIN
+        return
+
+    lock = _LOCKS.get(name)
+    if lock is None:
+        return
+    async with lock:
+        if _is_in_voice(client, MAIN_CHANNEL_ID):
+            return
+        channel = await _safe_get_channel(client, MAIN_CHANNEL_ID)
+        if not channel:
+            _channel_not_found[name] = _channel_not_found.get(name, 0) + 1
+            _channel_backoff[name] = min(
+                CHANNEL_NOT_FOUND_BACKOFF_MAX,
+                _channel_backoff.get(name, CHANNEL_NOT_FOUND_BACKOFF_MIN) * 1.5,
+            )
+            return
+        _channel_not_found[name] = 0
+        _channel_backoff[name] = CHANNEL_NOT_FOUND_BACKOFF_MIN
+
+        if client.voice_clients:
+            try:
+                await client.voice_clients[0].disconnect(force=True)
+            except Exception:
+                pass
+            await asyncio.sleep(2)
+
+        try:
+            await channel.connect(timeout=CONNECT_TIMEOUT, self_deaf=True, self_mute=True)
+            log.info("[%s] подключен к %s (В МУТЕ)", name.upper(), channel.name)
+            _register_voice_ok(name)
+        except Exception as e:
+            log.warning("[%s] ошибка подключения: %s", name.upper(), e)
+            _register_voice_drop(name, f"connect: {e}")
+
+
+async def _watchdog_loop(name: str):
+    client = _get_client(name)
+    if client is None:
+        return
+    while not _shutdown_event.is_set() and not _client_ready.get(name, False):
+        await asyncio.sleep(1.0)
+    while not _shutdown_event.is_set():
+        interval = _watchdog_intervals.get(name, WATCHDOG_BASE_INTERVAL)
+        if _channel_not_found.get(name, 0) > 0:
+            interval = max(interval, _channel_backoff.get(name, interval))
+        await asyncio.sleep(interval)
+        if _paused.get(name, False):
+            continue
+        if not _client_ready.get(name, False):
+            continue
+        if name == "reserve" and not reserve_manual_enabled:
+            continue
+        if not client.is_ready():
+            continue
+        if _is_dead_socket(client):
+            log_event(f"[{name.upper()}] dead socket")
+            _register_voice_drop(name, "dead-socket")
+            log_reconnect(name)
+            await _ensure_connected(name)
+            continue
+        if not _is_in_voice(client, MAIN_CHANNEL_ID):
+            _register_voice_drop(name, "not-in-voice")
+            log_reconnect(name)
+            await _ensure_connected(name)
+
+
+def _attach_247_events(name: str, client):
+    """on_ready/on_resumed/on_voice_state_update для 24/7-ботов."""
+    @client.event
+    async def on_ready():
+        log.info("[%s] авторизован как %s", name.upper(), client.user)
+        await _warmup_guild(name)
+        await _ensure_connected(name)
+        if name not in _watchdogs_started:
+            _watchdogs_started.add(name)
+            client.loop.create_task(_watchdog_loop(name))
+        if name not in _status_started:
+            _status_started.add(name)
+            client.loop.create_task(status_changer(client, name.upper()))
+
+    @client.event
+    async def on_resumed():
+        log.info("[%s] resumed", name.upper())
+        await _ensure_connected(name)
+
+    @client.event
+    async def on_voice_state_update(member, before, after):
+        if GUILD_ID:
+            g = getattr(member, "guild", None)
+            if g is None or g.id != GUILD_ID:
+                return
+        me = client.user
+        if me is None or member.id != me.id:
+            return
+        if before.channel and after.channel and before.channel.id == after.channel.id:
+            return
+        if not after.channel or after.channel.id != MAIN_CHANNEL_ID:
+            log_event(f"[{name.upper()}] вылетел из канала, переподключение...")
+            await asyncio.sleep(5)
+            await _ensure_connected(name)
+
+
+# ====================================================
 # WATCHER
 # ====================================================
 class Watcher:
@@ -577,6 +726,9 @@ class Watcher:
         async with self._connect_lock:
             if self.disabled or channel_id == 0:
                 return False, "Отключен"
+            if not _voice_supported():
+                return False, ("голос недоступен: не установлен PyNaCl "
+                               "(проверьте requirements.txt на Render)")
             try:
                 channel = await _safe_get_channel(self.client, channel_id)
                 if not channel:
@@ -659,12 +811,15 @@ def _is_allowed_user(message) -> bool:
     return author_id in ALLOWED_COMMAND_USERS
 
 def _is_command_channel(message) -> bool:
+    """ЛС - всегда; каналы сервера - по ALLOW_COMMANDS_IN_GUILD/белому списку."""
     if getattr(message, "guild", None) is None:
         return True
     if isinstance(message.channel, (discord.DMChannel, discord.PartialMessageable)):
         return True
     cid = getattr(message.channel, "id", None)
-    return cid in COMMAND_ALLOWED_CHANNEL_IDS
+    if cid in COMMAND_ALLOWED_CHANNEL_IDS:
+        return True
+    return ALLOW_COMMANDS_IN_GUILD
 
 def _should_defer_to_watcher(bound_client) -> bool:
     if _is_watcher_client(bound_client):
@@ -677,6 +832,26 @@ def _should_defer_to_watcher(bound_client) -> bool:
 _HANDLED_MSG_MAX = 2000
 _handled_msg_ids = set()
 _handled_msg_order = deque()
+
+# Причина игнора команды пишется в лог один раз на пользователя/канал,
+# чтобы в логах Render было видно, почему бот "молчит".
+_warned_ignored = set()
+
+def _warn_once(key, template, *args):
+    if key in _warned_ignored:
+        return
+    if len(_warned_ignored) > 500:
+        _warned_ignored.clear()
+    _warned_ignored.add(key)
+    log.warning(template, *args)
+
+def _voice_supported() -> bool:
+    """Есть ли PyNaCl: без него discord.py не может зайти в голосовой канал."""
+    try:
+        from discord.voice_client import has_nacl
+        return bool(has_nacl)
+    except Exception:
+        return False
 
 def _mark_message_handled(message_id: int) -> bool:
     if message_id in _handled_msg_ids:
@@ -727,13 +902,31 @@ def _build_help() -> str:
         "`!on egorik` / `!off egorik` — управление watcher'ом"
     )
 
+async def _set_watcher_enabled(w, enabled: bool) -> tuple:
+    """Включает/выключает дежурного. Возвращает (ok, текст)."""
+    if enabled:
+        if not MAIN_CHANNEL_ID:
+            return False, "не задан `VOICE_CHANNEL_ID` - некуда подключаться"
+        if not w.client.is_ready():
+            return False, "ещё не авторизован, попробуй через пару секунд"
+        w.disabled = False
+        w.manual_mode = True
+        ok, msg = await w.connect(MAIN_CHANNEL_ID)
+        if not ok:
+            # Откатываем режим, если подключиться не вышло.
+            w.manual_mode = False
+            w.disabled = True
+        return ok, msg
+    w.manual_mode = False
+    w.disabled = True
+    await w.disconnect()
+    return True, "выключен"
+
 async def _handle_message(bound_client, message):
     global total_commands_handled
     if bound_client.user is None:
         return
     if message.author.id == bound_client.user.id:
-        return
-    if not _is_allowed_user(message):
         return
     content = (message.content or "").strip()
     if not content:
@@ -742,6 +935,16 @@ async def _handle_message(bound_client, message):
     if not parts or not parts[0].startswith("!"):
         return
     if not _is_command_channel(message):
+        _warn_once(("channel", getattr(message.channel, "id", None)),
+                   "[%s] команда в канале %s проигнорирована: включите "
+                   "ALLOW_COMMANDS_IN_GUILD или добавьте канал в COMMAND_CHANNEL_IDS",
+                   getattr(bound_client, "user", "?"), getattr(message.channel, "id", None))
+        return
+    if not _is_allowed_user(message):
+        _warn_once(("user", getattr(message.author, "id", None)),
+                   "[%s] команда от пользователя %s проигнорирована: добавьте "
+                   "его ID в ALLOWED_USER_IDS на Render",
+                   getattr(bound_client, "user", "?"), getattr(message.author, "id", None))
         return
     if _should_defer_to_watcher(bound_client):
         return
@@ -755,19 +958,49 @@ async def _handle_message(bound_client, message):
         if t in ("egoist", "egorik") and cmd in ("!on", "!off", "!вкл", "!выкл"):
             w = watcher_egoist if t == "egoist" else watcher_egorik
             if not w:
-                await message.channel.send(f"⚠️ Дежурный `{t}` не настроен.")
+                await message.channel.send(f"⚠️ Дежурный `{t}` не настроен "
+                                           "(нет токена DISCORD_TOKEN_1/2).")
                 return
+            ok, msg = await _set_watcher_enabled(w, cmd in ("!on", "!вкл"))
             if cmd in ("!on", "!вкл"):
-                w.disabled = False
-                w.manual_mode = True
-                ok, msg = await w.connect(MAIN_CHANNEL_ID)
-                await message.channel.send(f"✅ {t} вкл ({msg})." if ok else f"❌ Ошибка при подключении {t}: {msg}")
+                await message.channel.send(f"✅ {t} вкл ({msg})." if ok
+                                           else f"❌ Ошибка при подключении {t}: {msg}")
             else:
-                w.manual_mode = False
-                w.disabled = True
-                await w.disconnect()
-                await message.channel.send(f"⚙️ {t} выкл.")
+                await message.channel.send(f"⚙️ {t} {msg}." if ok
+                                           else f"❌ Ошибка при отключении {t}: {msg}")
             return
+
+    if low in ("!all on", "!all off"):
+        enabled = low == "!all on"
+        results = []
+        for w in (watcher_egoist, watcher_egorik):
+            if w is None:
+                results.append("• нет токена")
+                continue
+            ok, msg = await _set_watcher_enabled(w, enabled)
+            results.append(f"• {w.key}: {'✅ ' + msg if ok else '❌ ' + msg}")
+        head = "✅ Все включены." if enabled else "⛔ Все выключены."
+        await message.channel.send(head + "\n" + "\n".join(results)); return
+
+    if parts[0].lower() == "!reserve" and len(parts) >= 2:
+        global reserve_manual_enabled
+        if reserve_client is None:
+            await message.channel.send("⚠️ RESERVE не настроен."); return
+        if parts[1].lower() == "on":
+            reserve_manual_enabled = True
+            await _ensure_connected("reserve")
+            await message.channel.send("✅ RESERVE включён.")
+        elif parts[1].lower() == "off":
+            reserve_manual_enabled = False
+            try:
+                if reserve_client.voice_clients:
+                    await reserve_client.voice_clients[0].disconnect(force=True)
+            except Exception:
+                pass
+            await message.channel.send("⛔ RESERVE отключён.")
+        else:
+            await message.channel.send("⚠️ `!reserve on|off`")
+        return
 
     if low in ("!panel", "!status", "!menu"):
         await message.channel.send(_build_panel()); return
@@ -820,6 +1053,12 @@ async def main():
     log.info("VOICE_CHANNEL_ID = %s", MAIN_CHANNEL_ID)
     log.info("GUILD_ID         = %s", GUILD_ID)
     log.info("SPAM_CHANNEL_ID  = %s", SPAM_CHANNEL_ID)
+    log.info("Команды в каналах сервера: %s",
+             "ДА (любой канал)" if ALLOW_COMMANDS_IN_GUILD else "только белый список")
+    log.info("Белый список каналов: %s", sorted(COMMAND_ALLOWED_CHANNEL_IDS))
+    log.info("Команды разрешены пользователям: %s", sorted(ALLOWED_COMMAND_USERS))
+    log.info("Голос (PyNaCl): %s",
+             "ОК" if _voice_supported() else "НЕТ - !on и 24/7 не зайдут в войс!")
     log.info("Токены: 1=%s 2=%s 3=%s 4=%s 5=%s 6=%s",
              bool(TOKEN_EGOIST), bool(TOKEN_EGORIK), bool(TOKEN_MAIN),
              bool(TOKEN_SECOND), bool(TOKEN_THIRD), bool(TOKEN_RESERVE))
@@ -839,6 +1078,14 @@ async def main():
     third_client.event(_on_msg(third_client))
     if reserve_client:
         reserve_client.event(_on_msg(reserve_client))
+
+    # 24/7-боты должны сами заходить в голосовой канал (в муте) и
+    # переподключаться, если их выкинуло.
+    _attach_247_events("main", main_client)
+    _attach_247_events("second", second_client)
+    _attach_247_events("third", third_client)
+    if reserve_client:
+        _attach_247_events("reserve", reserve_client)
 
     tasks = []
 

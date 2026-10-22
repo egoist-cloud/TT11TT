@@ -38,6 +38,14 @@ services:
       # Прочее
       - key: SPAM_CHANNEL_ID
         value: "1270672504582832150"
+      - key: REPORT_CHANNEL_ID        # канал, где команды работают всегда
+        value: "1241013075151425650"
+      - key: ALLOW_COMMANDS_IN_GUILD  # команды в любом канале сервера
+        value: "true"
+      - key: COMMAND_CHANNEL_IDS      # доп. каналы через запятую (необязательно)
+        sync: false
+      - key: ALLOWED_USER_IDS         # кто может управлять (ID через запятую; владельцы и так разрешены)
+        sync: false
       - key: STATUS_ROTATION
         value: "false"
       - key: PING_INTERVAL

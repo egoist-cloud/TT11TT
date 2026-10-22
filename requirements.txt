@@ -1,3 +1,8 @@
 staypresent[prod]
+# Экстра [voice] тянет PyNaCl + davey - без них не работает голос
+# ("voice will NOT be supported", !on не сможет зайти в канал).
 discord.py-self[voice] @ git+https://github.com/dolfies/discord.py-self@2ba64a9a997e151a9c259984e0a179b1fdf4aff4
+# Страховка: extras у git-ссылки pip иногда игнорирует.
+PyNaCl>=1.6.0,<1.7
+davey>=0.1.0
 aiohttp<4
