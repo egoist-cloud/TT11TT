@@ -1,0 +1,7 @@
+﻿# Логи и кэш Python
+__pycache__/
+*.py[cod]
+bot.log
+e2e_err.log
+e2e_out.log
+.venv/
