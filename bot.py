@@ -1,5 +1,5 @@
 # ====================================================
-# TT11TT — Discord боты (v54 - Syntax Fix)
+# TT11TT — Discord боты (v55 - Fix _install_signal_handlers)
 # ====================================================
 import os
 import sys
@@ -92,7 +92,7 @@ def _detect_render_url() -> str:
 RENDER_URL = _detect_render_url()
 STATUS_ROTATION = get_env_bool("STATUS_ROTATION", False)
 
-# ДОСТУП
+# ДОСТУП К КОМАНДАМ
 ALLOWED_COMMAND_USERS = {1113899288192356402, 1416125087324831815}
 COMMAND_ALLOWED_CHANNEL_IDS = {1241013075151425650}
 
@@ -110,7 +110,7 @@ CHANNEL_NOT_FOUND_BACKOFF_MAX = 60.0
 TEXT_STATUSES = ["Commback", "TALENT 24/7", "На страже", "Сижу в войсе"]
 WATCHING_STATUSES = ["как вы играете", "на ваши сообщения", "за порядком"]
 
-# ГЕНЕРАТОР
+# ГЕНЕРАТОР ТЕКСТА
 _LOWER = string.ascii_lowercase
 _UPPER = string.ascii_uppercase
 _DIGITS = string.digits
@@ -136,9 +136,12 @@ def _rand_gibberish_phrase():
 def _generate_live_text_safe() -> str:
     try:
         r = random.random()
-        if r < 0.5: return _rand_letters_mixed()
-        if r < 0.75: return _rand_digits()
-        if r < 0.95: return _rand_mixed()
+        if r < 0.5:
+            return _rand_letters_mixed()
+        if r < 0.75:
+            return _rand_digits()
+        if r < 0.95:
+            return _rand_mixed()
         return _rand_gibberish_phrase()
     except Exception:
         return _rand_letters()
@@ -156,7 +159,6 @@ _watchdog_intervals = {k: WATCHDOG_BASE_INTERVAL for k in ALL_KEYS}
 _client_ready = {k: False for k in ALL_KEYS}
 _channel_not_found = {k: 0 for k in ALL_KEYS}
 _channel_backoff = {k: CHANNEL_NOT_FOUND_BACKOFF_MIN for k in ALL_KEYS}
-_paused = {k: False for k in ALL_KEYS}
 _consecutive_failures = {k: 0 for k in ALL_KEYS}
 _drops_by_hour = {h: 0 for h in range(24)}
 _drops_day = datetime.now(timezone.utc).date()
@@ -360,7 +362,7 @@ async def _all_offline_watchdog():
                 _all_offline_since = time.time()
                 log_event("⚠️ Все клиенты оффлайн")
             elif time.time() - _all_offline_since > ALL_OFFLINE_RESTART_SEC:
-                log.error("Все оффлайн > %dс — перезапуск", ALL_OFFLINE_RESTART_SEC)
+                log.error("Все оффлайн > %dс — перезапуск процесса", ALL_OFFLINE_RESTART_SEC)
                 os._exit(1)
         else:
             _all_offline_since = None
@@ -378,9 +380,9 @@ class Watcher:
         self._connect_lock = asyncio.Lock()
         self._watchdog_task = None
         self._status_task = None
-        self._reg()
+        self._register_events()
 
-    def _reg(self):
+    def _register_events(self):
         @self.client.event
         async def on_ready():
             log.info("[%s] авторизован как %s", self.name, self.client.user)
@@ -600,7 +602,7 @@ def _ping(clients) -> str:
             elif not c.is_ready():
                 out.append(f"- {name}: оффлайн")
             else:
-                out.append(f"- {name}: онлайн | {int(c.latency*1000)}мс")
+                out.append(f"- {name}: онлайн | {int(c.latency * 1000)}мс")
         except Exception:
             out.append(f"- {name}: ошибка")
     return "\n".join(out)
@@ -614,7 +616,7 @@ def _panel() -> str:
         m3 = "ON" if third_client.is_ready() else "OFF"
         m4 = "ON" if reserve_client and reserve_client.is_ready() else "OFF"
     except Exception:
-        w1=w2=m1=m2=m3=m4="?"
+        w1 = w2 = m1 = m2 = m3 = m4 = "?"
     return (
         f"**Панель** | Uptime: {fmt_uptime()}\n"
         f"Egoist:{w1} Egorik:{w2} | MAIN:{m1} SECOND:{m2} THIRD:{m3} RES:{m4}\n"
@@ -654,7 +656,8 @@ async def _handle(bound, message):
         if t in ("egoist", "egorik") and cmd in ("!on", "!вкл"):
             w = watcher_egoist if t == "egoist" else watcher_egorik
             if not w:
-                await message.channel.send("Не настроен"); return
+                await message.channel.send("Не настроен")
+                return
             w.disabled = False
             w.manual_mode = True
             ok, res = await w.connect(MAIN_CHANNEL_ID)
@@ -663,7 +666,8 @@ async def _handle(bound, message):
         if t in ("egoist", "egorik") and cmd in ("!off", "!выкл"):
             w = watcher_egoist if t == "egoist" else watcher_egorik
             if not w:
-                await message.channel.send("Не настроен"); return
+                await message.channel.send("Не настроен")
+                return
             w.manual_mode = False
             w.disabled = True
             await w.disconnect()
@@ -671,48 +675,65 @@ async def _handle(bound, message):
             return
 
     if low in ("!panel", "!status"):
-        await message.channel.send(_panel()); return
+        await message.channel.send(_panel())
+        return
     if low == "!help":
-        await message.channel.send(_help()); return
+        await message.channel.send(_help())
+        return
     if low == "!ping":
         lst = [("MAIN", main_client), ("SECOND", second_client), ("THIRD", third_client)]
-        if reserve_client: lst.append(("RES", reserve_client))
-        if watcher_egoist: lst.append(("Egoist", watcher_egoist.client))
-        if watcher_egorik: lst.append(("Egorik", watcher_egorik.client))
-        await message.channel.send(_ping(lst)); return
+        if reserve_client:
+            lst.append(("RES", reserve_client))
+        if watcher_egoist:
+            lst.append(("Egoist", watcher_egoist.client))
+        if watcher_egorik:
+            lst.append(("Egorik", watcher_egorik.client))
+        await message.channel.send(_ping(lst))
+        return
     if low == "!connect" and bound == main_client:
-        await message.channel.send("Используй !on egoist|egorik"); return
+        await message.channel.send("Используй !on egoist|egorik")
+        return
     if low == "!disconnect" and bound == main_client:
-        await message.channel.send("Используй !off egoist|egorik"); return
+        await message.channel.send("Используй !off egoist|egorik")
+        return
     if low == "!reconnect" and bound == main_client:
         for w in (watcher_egoist, watcher_egorik):
             if w and not w.disabled and w.manual_mode:
-                try: await w._force_reconnect()
-                except Exception: pass
-        await message.channel.send("Реконнект запущен"); return
+                try:
+                    await w._force_reconnect()
+                except Exception:
+                    pass
+        await message.channel.send("Реконнект запущен")
+        return
     if low.startswith("!spam") and bound == main_client:
         try:
-            cnt = int(parts[1]) if len(parts)>1 else 5
+            cnt = int(parts[1]) if len(parts) > 1 else 5
             cnt = max(1, min(cnt, 40))
             if watcher_egoist and not watcher_egoist.disabled and watcher_egoist.manual_mode:
                 await watcher_egoist.spam_messages(SPAM_CHANNEL_ID or MAIN_CHANNEL_ID, cnt)
                 await message.channel.send(f"Спам {cnt} (Egoist)")
+                return
             elif watcher_egorik and not watcher_egorik.disabled and watcher_egorik.manual_mode:
                 await watcher_egorik.spam_messages(SPAM_CHANNEL_ID or MAIN_CHANNEL_ID, cnt)
                 await message.channel.send(f"Спам {cnt} (Egorik)")
+                return
             else:
                 await message.channel.send("Включи !on egoist или !on egorik")
+                return
         except Exception as e:
             await message.channel.send(f"Err {e}")
-        return
+            return
 
-def _sig(loop):
-    def s():
-        log.info("Завершение...")
+def _install_signal_handlers(loop):
+    def _stop():
+        log.info("Получен сигнал завершения...")
         _shutdown_event.set()
+
     for sig in (signal.SIGINT, signal.SIGTERM):
-        try: loop.add_signal_handler(sig, s)
-        except Exception: pass
+        try:
+            loop.add_signal_handler(sig, _stop)
+        except NotImplementedError:
+            pass
 
 async def _start(c, t, n):
     d = 30
@@ -720,40 +741,58 @@ async def _start(c, t, n):
         try:
             await c.start(t)
             log.warning("[%s] закрыт, рестарт через %dс", n, d)
-            await asyncio.sleep(d); d = min(d*2,600)
+            await asyncio.sleep(d)
+            d = min(d * 2, 600)
         except discord.LoginFailure as e:
-            log.error("[%s] bad token %s", n, e); await asyncio.sleep(300); d=300
+            log.error("[%s] неверный токен: %s", n, e)
+            await asyncio.sleep(300)
+            d = 300
         except Exception as e:
-            log.error("[%s] err %s", n, e); await asyncio.sleep(d); d=min(d*2,600)
+            log.error("[%s] ошибка: %s, рестарт через %dс", n, e, d)
+            await asyncio.sleep(d)
+            d = min(d * 2, 600)
 
 async def main():
     global watcher_egoist, watcher_egorik
     log.info("Инициализация...")
-    log.info("VOICE=%s GUILD=%s SPAM=%s", MAIN_CHANNEL_ID, GUILD_ID, SPAM_CHANNEL_ID)
-    log.info("TOK1:%s TOK2:%s TOK3:%s TOK4:%s TOK5:%s TOK6:%s", bool(TOKEN_EGOIST),bool(TOKEN_EGORIK),bool(TOKEN_MAIN),bool(TOKEN_SECOND),bool(TOKEN_THIRD),bool(TOKEN_RESERVE))
-    
+    log.info("--------------------------------------------------")
+    log.info("VOICE_CHANNEL_ID = %s", MAIN_CHANNEL_ID)
+    log.info("GUILD_ID         = %s", GUILD_ID)
+    log.info("SPAM_CHANNEL_ID  = %s", SPAM_CHANNEL_ID)
+    log.info("Токены: 1=%s 2=%s 3=%s 4=%s 5=%s 6=%s", bool(TOKEN_EGOIST), bool(TOKEN_EGORIK), bool(TOKEN_MAIN), bool(TOKEN_SECOND), bool(TOKEN_THIRD), bool(TOKEN_RESERVE))
+    log.info("--------------------------------------------------")
+
     watcher_egoist = Watcher(TOKEN_EGOIST, get_env_int("USER_ID_1"), "Egoist") if TOKEN_EGOIST else None
     watcher_egorik = Watcher(TOKEN_EGORIK, get_env_int("USER_ID_2"), "Egorik") if TOKEN_EGORIK else None
-    
-    if watcher_egoist: watcher_egoist.client.event(_on_msg(watcher_egoist.client))
-    if watcher_egorik: watcher_egorik.client.event(_on_msg(watcher_egorik.client))
+
+    if watcher_egoist:
+        watcher_egoist.client.event(_on_msg(watcher_egoist.client))
+    if watcher_egorik:
+        watcher_egorik.client.event(_on_msg(watcher_egorik.client))
     main_client.event(_on_msg(main_client))
     second_client.event(_on_msg(second_client))
     third_client.event(_on_msg(third_client))
-    if reserve_client: reserve_client.event(_on_msg(reserve_client))
-    
+    if reserve_client:
+        reserve_client.event(_on_msg(reserve_client))
+
     tasks = []
-    if TOKEN_MAIN: tasks.append(_start(main_client, TOKEN_MAIN, "MAIN"))
-    if TOKEN_SECOND: tasks.append(_start(second_client, TOKEN_SECOND, "SECOND"))
-    if TOKEN_THIRD: tasks.append(_start(third_client, TOKEN_THIRD, "THIRD"))
-    if TOKEN_RESERVE and reserve_client: tasks.append(_start(reserve_client, TOKEN_RESERVE, "RESERVE"))
-    if watcher_egoist: tasks.append(watcher_egoist.start())
-    if watcher_egorik: tasks.append(watcher_egorik.start())
+    if TOKEN_MAIN:
+        tasks.append(_start(main_client, TOKEN_MAIN, "MAIN"))
+    if TOKEN_SECOND:
+        tasks.append(_start(second_client, TOKEN_SECOND, "SECOND"))
+    if TOKEN_THIRD:
+        tasks.append(_start(third_client, TOKEN_THIRD, "THIRD"))
+    if TOKEN_RESERVE and reserve_client:
+        tasks.append(_start(reserve_client, TOKEN_RESERVE, "RESERVE"))
+    if watcher_egoist:
+        tasks.append(watcher_egoist.start())
+    if watcher_egorik:
+        tasks.append(watcher_egorik.start())
     tasks.append(uptime_pinger())
     tasks.append(_heartbeat_loop())
     tasks.append(_all_offline_watchdog())
-    
-    log.info("Старт...")
+
+    log.info("Запуск всех ботов...")
     await asyncio.gather(*tasks, return_exceptions=True)
 
 if __name__ == "__main__":
@@ -761,7 +800,7 @@ if __name__ == "__main__":
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         loop.set_exception_handler(exception_handler)
-        _sig(loop)
+        _install_signal_handlers(loop)
         loop.run_until_complete(main())
     except KeyboardInterrupt:
-        pas
+        pass
