@@ -1,5 +1,5 @@
 # ====================================================
-# TT11TT — Discord боты (v52 - Полный фикс)
+# TT11TT — Discord боты (v53 - Полный фикс под bot.py)
 # ====================================================
 import os
 import sys
@@ -203,6 +203,43 @@ if reserve_client is not None: _CLIENTS["reserve"] = reserve_client
 
 _LOCKS = {"main": _main_lock, "second": _second_lock, "third": _third_lock, "reserve": _reserve_lock}
 
+# ВОЙС-ВСПОМОГАТЕЛЬНЫЕ
+async def _warmup_guild(key: str):
+    try:
+        _client_ready[key] = True
+        _warmup_done[key] = True
+        _voice_last_ok[key] = time.time()
+        if _voice_uptime.get(key, 0.0) == 0.0:
+            _voice_uptime[key] = time.time()
+        log.debug("[%s] warmup done", key)
+    except Exception as e:
+        log.debug("[%s] warmup error: %s", key, e)
+
+def _register_voice_ok(key: str):
+    try:
+        _voice_last_ok[key] = time.time()
+        if _voice_uptime.get(key, 0.0) == 0.0:
+            _voice_uptime[key] = time.time()
+        _consecutive_failures[key] = 0
+    except Exception:
+        pass
+
+def _register_voice_drop(key: str, reason: str = ""):
+    global total_voice_drops
+    try:
+        total_voice_drops += 1
+        now = datetime.now(timezone.utc)
+        global _drops_day
+        if now.date() != _drops_day:
+            _drops_day = now.date()
+            for h in range(24):
+                _drops_by_hour[h] = 0
+        _drops_by_hour[now.hour] += 1
+        _consecutive_failures[key] = _consecutive_failures.get(key, 0) + 1
+        log_event(f"[{key}] voice drop ({reason})")
+    except Exception:
+        pass
+
 # УТИЛИТЫ
 def log_event(text: str):
     ts = time.strftime("%H:%M:%S")
@@ -335,7 +372,7 @@ async def _all_offline_watchdog():
         if ready_count == 0:
             if _all_offline_since is None:
                 _all_offline_since = time.time()
-                log_event("⚠️ ВСЕ клиенты offline — пробую полный рестарт клиентов")
+                log_event("⚠️ ВСЕ клиенты offline — пробую полный рестарт")
             elif time.time() - _all_offline_since > ALL_OFFLINE_RESTART_SEC:
                 log.error("🚨 ВСЕ offline > %dс — перезапуск процесса", ALL_OFFLINE_RESTART_SEC)
                 os._exit(1)
@@ -379,12 +416,16 @@ class Watcher:
             log.info("[%s] авторизован как %s", self.name, self.client.user)
             await _warmup_guild(self.key)
             if self._status_task is None or self._status_task.done():
-                self._status_task = self.client.loop.create_task(status_changer(self.client, self.name))
+                try:
+                    self._status_task = self.client.loop.create_task(status_changer(self.client, self.name))
+                except Exception:
+                    pass
             self._start_watchdog()
 
         @self.client.event
         async def on_disconnect():
-            if self.manual_mode and not self.disabled: log_event(f"[{self.name}] on_disconnect")
+            if self.manual_mode and not self.disabled:
+                log_event(f"[{self.name}] on_disconnect")
 
         @self.client.event
         async def on_resumed():
@@ -392,7 +433,10 @@ class Watcher:
             if not _client_ready.get(self.key, False):
                 await _warmup_guild(self.key)
             if self.manual_mode and not self.disabled:
-                await self.connect(MAIN_CHANNEL_ID)
+                try:
+                    await self.connect(MAIN_CHANNEL_ID)
+                except Exception:
+                    pass
 
         @self.client.event
         async def on_voice_state_update(member, before, after):
@@ -404,14 +448,20 @@ class Watcher:
             if not self.manual_mode or self.disabled: return
             if before.channel and after.channel and before.channel.id == after.channel.id: return
             if not after.channel or after.channel.id != MAIN_CHANNEL_ID:
-                log_event(f"[{self.name}] Принудительный выход или кик, переподключение...")
-                await asyncio.sleep(5)
+                log_event(f"[{self.name}] Потеря соединения с войсом, переподключаю...")
+                await asyncio.sleep(4)
                 if self.manual_mode and not self.disabled:
-                    await self.connect(MAIN_CHANNEL_ID)
+                    try:
+                        await self.connect(MAIN_CHANNEL_ID)
+                    except Exception:
+                        pass
 
     def _start_watchdog(self):
         if self._watchdog_task is None or self._watchdog_task.done():
-            self._watchdog_task = self.client.loop.create_task(self._watchdog())
+            try:
+                self._watchdog_task = self.client.loop.create_task(self._watchdog())
+            except Exception:
+                pass
 
     async def _watchdog(self):
         while not _shutdown_event.is_set() and not _client_ready.get(self.key, False):
@@ -463,22 +513,26 @@ class Watcher:
                     return False, "Канал не найден"
                 _channel_not_found[self.key] = 0
                 _channel_backoff[self.key] = CHANNEL_NOT_FOUND_BACKOFF_MIN
-                if _is_in_voice(self.client, channel_id): return True, "Уже в канале"
+                if _is_in_voice(self.client, channel_id): 
+                    _register_voice_ok(self.key)
+                    return True, "Уже в канале"
                 if self.client.voice_clients:
                     try: await self.client.voice_clients[0].disconnect(force=True)
                     except Exception: pass
                     await asyncio.sleep(2)
                 await channel.connect(timeout=CONNECT_TIMEOUT, self_deaf=False, self_mute=False)
-                log.info("[%s] подключен к %s (БЕЗ МУТА)", self.name, channel.name)
+                log.info("[%s] подключен к %s (БЕЗ МУТА)", self.name, getattr(channel, 'name', channel_id))
                 _register_voice_ok(self.key)
                 return True, "Успешно"
             except Exception as e:
+                _register_voice_drop(self.key, "connect-fail")
                 return False, str(e)
 
     async def disconnect(self):
-        if self.client.voice_clients:
-            try: await self.client.voice_clients[0].disconnect(force=True)
-            except Exception: pass
+        try:
+            if self.client.voice_clients:
+                await self.client.voice_clients[0].disconnect(force=True)
+        except Exception: pass
 
     async def start(self):
         delay = 30
@@ -509,7 +563,10 @@ class Watcher:
                     total_messages_sent += 1
                 except discord.HTTPException as he:
                     if he.status == 429:
-                        retry = he.response.headers.get("Retry-After") if he.response else None
+                        retry = None
+                        try:
+                            if he.response: retry = he.response.headers.get("Retry-After")
+                        except Exception: pass
                         await asyncio.sleep(float(retry or 5))
                         continue
                     raise
@@ -520,151 +577,10 @@ class Watcher:
             log.error("[%s] Ошибка спама: %s", self.name, e)
             return False
 
-# ОСТАЛЬНОЙ КОД КОМАНД/ПАНЕЛИ/ЗАПУСКА
-# (сохранил как в рабочей версии с ограничением доступа)
-
+# ОБРАБОТКА КОМАНД
 def _is_allowed_user(message) -> bool:
     author_id = getattr(message.author, "id", None)
     return author_id in ALLOWED_COMMAND_USERS
 
 def _is_command_channel(message) -> bool:
-    if getattr(message, "guild", None) is None:
-        return True
-    if isinstance(message.channel, (discord.DMChannel, discord.PartialMessageable)):
-        return True
-    cid = getattr(message.channel, "id", None)
-    return cid in COMMAND_ALLOWED_CHANNEL_IDS
-
-def _should_defer_to_watcher(bound_client) -> bool:
-    if _is_watcher_client(bound_client):
-        return False
-    for w in (watcher_egoist, watcher_egorik):
-        if w is not None and w.client.is_ready():
-            return True
-    return False
-
-_HANDLED_MSG_MAX = 2000
-_handled_msg_ids = set()
-_handled_msg_order = deque()
-
-def _mark_message_handled(message_id: int) -> bool:
-    if message_id in _handled_msg_ids:
-        return True
-    if len(_handled_msg_order) >= _HANDLED_MSG_MAX:
-        old = _handled_msg_order.popleft()
-        _handled_msg_ids.discard(old)
-    _handled_msg_order.append(message_id)
-    _handled_msg_ids.add(message_id)
-    return False
-
-def _make_on_message(bound_client):
-    async def on_message(message):
-        try:
-            await _handle_message(bound_client, message)
-        except Exception as e:
-            log.error("[%s] Ошибка при обработке команды: %s", getattr(bound_client, "user", "?"), e)
-    return on_message
-
-async def _handle_message(bound_client, message):
-    global total_commands_handled, _last_write_at
-    if bound_client.user is None: return
-    if message.author.id == bound_client.user.id: return
-    if not _is_allowed_user(message): return
-    content = (message.content or "").strip()
-    if not content: return
-    parts = content.split()
-    if not parts or not parts[0].startswith("!"): return
-    if not _is_command_channel(message): return
-    if _should_defer_to_watcher(bound_client): return
-    if _mark_message_handled(message.id): return
-    total_commands_handled += 1
-
-    low = content.lower()
-    if len(parts) >= 2:
-        cmd, t = parts[0].lower(), parts[1].lower()
-        if t in ("egoist", "egorik") and cmd in ("!on", "!off", "!вкл", "!выкл"):
-            w = watcher_egoist if t == "egoist" else watcher_egorik
-            if not w:
-                await message.channel.send(f"⚠️ Дежурный `{t}` не настроен.")
-                return
-            if cmd in ("!on", "!вкл"):
-                w.disabled = False
-                w.manual_mode = True
-                ok, msg = await w.connect(MAIN_CHANNEL_ID)
-                await message.channel.send(f"✅ {t} вкл ({msg})." if ok else f"❌ Ошибка при подключении {t}: {msg}")
-            else:
-                w.manual_mode = False
-                w.disabled = True
-                await w.disconnect()
-                await message.channel.send(f"⚙️ {t} выкл.")
-            return
-
-    if low in ("!panel", "!status", "!menu"): await message.channel.send(_build_panel()); return
-    if low == "!ping":
-        clients = [("MAIN", main_client), ("SECOND", second_client), ("THIRD", third_client)]
-        if reserve_client is not None: clients.append(("RESERVE", reserve_client))
-        if watcher_egoist: clients.append(("Egoist", watcher_egoist.client))
-        if watcher_egorik: clients.append(("Egorik", watcher_egorik.client))
-        await message.channel.send(_build_ping(clients)); return
-    if low == "!help": await message.channel.send(_build_help()); return
-
-# ... (остальные функции _build_* оставь как есть из рабочей версии)
-
-def _install_signal_handlers(loop):
-    def _stop():
-        log.info("Получен сигнал завершения...")
-        _shutdown_event.set()
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        try:
-            loop.add_signal_handler(sig, _stop)
-        except NotImplementedError:
-            pass
-
-async def safe_start(client, token, name):
-    delay = 30
-    while not _shutdown_event.is_set():
-        try:
-            await client.start(token)
-            log.warning("[%s] клиент закрылся, переподключение через %dс", name, delay)
-            await asyncio.sleep(delay)
-            delay = min(delay * 2, 600)
-        except discord.LoginFailure as e:
-            log.error("[%s] НЕВЕРНЫЙ ТОКЕН (%s). Ждём 300с перед повтором.", name, e)
-            await asyncio.sleep(300)
-            delay = 300
-        except Exception as e:
-            log.error("[%s] ошибка: %s, рестарт через %dс", name, e, delay)
-            await asyncio.sleep(delay)
-            delay = min(delay * 2, 600)
-
-async def main():
-    global watcher_egoist, watcher_egorik
-    log.info("Инициализация...")
-    watcher_egoist = Watcher(TOKEN_EGOIST, get_env_int("USER_ID_1"), "Egoist") if TOKEN_EGOIST else None
-    watcher_egorik = Watcher(TOKEN_EGORIK, get_env_int("USER_ID_2"), "Egorik") if TOKEN_EGORIK else None
-    if watcher_egoist: watcher_egoist.client.event(_make_on_message(watcher_egoist.client))
-    if watcher_egorik: watcher_egorik.client.event(_make_on_message(watcher_egorik.client))
-
-    tasks = []
-    if TOKEN_MAIN: tasks.append(safe_start(main_client, TOKEN_MAIN, "MAIN"))
-    if TOKEN_SECOND: tasks.append(safe_start(second_client, TOKEN_SECOND, "SECOND"))
-    if TOKEN_THIRD: tasks.append(safe_start(third_client, TOKEN_THIRD, "THIRD"))
-    if TOKEN_RESERVE and reserve_client is not None: tasks.append(safe_start(reserve_client, TOKEN_RESERVE, "RESERVE"))
-    if watcher_egoist: tasks.append(watcher_egoist.start())
-    if watcher_egorik: tasks.append(watcher_egorik.start())
-    tasks.append(uptime_pinger())
-    tasks.append(_heartbeat_loop())
-    tasks.append(_all_offline_watchdog())
-
-    log.info("Запуск всех ботов...")
-    await asyncio.gather(*tasks, return_exceptions=True)
-
-if __name__ == "__main__":
-    try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.set_exception_handler(exception_handler)
-        _install_signal_handlers(loop)
-        loop.run_until_complete(main())
-    except KeyboardInterrupt:
-        pass
+    if
