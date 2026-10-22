@@ -11,7 +11,7 @@ services:
       - key: PYTHON_VERSION
         value: 3.12.7
 
-      # Токены
+      # Токены Discord-аккаунтов
       - key: DISCORD_TOKEN_1
         sync: false
       - key: DISCORD_TOKEN_2
@@ -25,7 +25,7 @@ services:
       - key: DISCORD_TOKEN_6
         sync: false
 
-      # Сервер/канал
+      # Сервер / голосовой канал
       - key: VOICE_CHANNEL_ID
         sync: false
       - key: GUILD_ID
@@ -46,3 +46,5 @@ services:
         value: "180"
       - key: MAX_RESTARTS
         value: "50"
+      - key: PYTHONUNBUFFERED
+        value: "1"
